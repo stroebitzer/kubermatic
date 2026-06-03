@@ -84,6 +84,8 @@ type TemplateData struct {
 	etcdDiskSize                          resource.Quantity
 	oidcIssuerURL                         string
 	oidcIssuerClientID                    string
+	oidcAuthenticationFeatureEnabled      bool
+	authenticationConfigurationYAML       []byte
 	kubermaticImage                       string
 	dnatControllerImage                   string
 	networkIntfMgrImage                   string
@@ -91,6 +93,8 @@ type TemplateData struct {
 	machineControllerImageRepository      string
 	operatingSystemManagerImageTag        string
 	operatingSystemManagerImageRepository string
+	kubeLBImageRepository                 string
+	kubeLBImageTag                        string
 	backupSchedule                        time.Duration
 	backupCount                           *int
 	versions                              kubermatic.Versions
@@ -101,6 +105,7 @@ type TemplateData struct {
 	supportsFailureDomainZoneAntiAffinity bool
 	userClusterMLAEnabled                 bool
 	isKonnectivityEnabled                 bool
+	dra                                   bool
 
 	tunnelingAgentIP string
 
@@ -199,6 +204,16 @@ func (td *TemplateDataBuilder) WithOIDCIssuerClientID(clientID string) *Template
 	return td
 }
 
+func (td *TemplateDataBuilder) WithOIDCAuthenticationFeatureEnabled(enabled bool) *TemplateDataBuilder {
+	td.data.oidcAuthenticationFeatureEnabled = enabled
+	return td
+}
+
+func (td *TemplateDataBuilder) WithAuthenticationConfigurationYAML(yaml []byte) *TemplateDataBuilder {
+	td.data.authenticationConfigurationYAML = yaml
+	return td
+}
+
 func (td *TemplateDataBuilder) WithKubermaticImage(image string) *TemplateDataBuilder {
 	td.data.kubermaticImage = image
 	return td
@@ -260,6 +275,16 @@ func (td *TemplateDataBuilder) WithBackupCount(backupCount int) *TemplateDataBui
 	return td
 }
 
+func (td *TemplateDataBuilder) WithKubeLBImageRepository(repository string) *TemplateDataBuilder {
+	td.data.kubeLBImageRepository = repository
+	return td
+}
+
+func (td *TemplateDataBuilder) WithKubeLBImageTag(tag string) *TemplateDataBuilder {
+	td.data.kubeLBImageTag = tag
+	return td
+}
+
 func (td *TemplateDataBuilder) WithMachineControllerImageTag(tag string) *TemplateDataBuilder {
 	td.data.machineControllerImageTag = tag
 	return td
@@ -295,6 +320,11 @@ func (td TemplateDataBuilder) Build() *TemplateData {
 	return &td.data
 }
 
+func (td *TemplateDataBuilder) WithDRA(draEnabled bool) *TemplateDataBuilder {
+	td.data.dra = draEnabled
+	return td
+}
+
 // GetViewerToken returns the viewer token.
 func (d *TemplateData) GetViewerToken() (string, error) {
 	viewerTokenSecret := &corev1.Secret{}
@@ -318,6 +348,22 @@ func (d *TemplateData) OIDCIssuerURL() string {
 // OIDCIssuerClientID return the issuer client ID.
 func (d *TemplateData) OIDCIssuerClientID() string {
 	return d.oidcIssuerClientID
+}
+
+// IsAuthenticationConfigurationEnabled returns true when the AuthenticationConfiguration is enabled.
+func (d *TemplateData) IsAuthenticationConfigurationEnabled() bool {
+	// Method implementation needs to be aligned with the conditions within AuthenticationConfigurationReconciler
+	oidcSettings := d.cluster.Spec.OIDC //nolint:staticcheck
+
+	return d.cluster.Spec.IsAuthenticationConfigurationEnabled() ||
+		len(d.authenticationConfigurationYAML) > 0 ||
+		d.oidcAuthenticationFeatureEnabled ||
+		oidcSettings.IssuerURL != "" && oidcSettings.ClientID != ""
+}
+
+// AuthenticationConfigurationYAML returns the seed's authentication configuration in YAML format.
+func (d *TemplateData) AuthenticationConfigurationYAML() []byte {
+	return d.authenticationConfigurationYAML
 }
 
 // Cluster returns the cluster.
@@ -418,6 +464,14 @@ func (d *TemplateData) GetClusterRef() metav1.OwnerReference {
 // ExternalIP returns the external facing IP or an error if no IP exists.
 func (d *TemplateData) ExternalIP() (*net.IP, error) {
 	return GetClusterExternalIP(d.cluster)
+}
+
+func (d *TemplateData) KubeLBImageRepository() string {
+	return d.kubeLBImageRepository
+}
+
+func (d *TemplateData) KubeLBImageTag() string {
+	return d.kubeLBImageTag
 }
 
 func (d *TemplateData) MachineControllerImageTag() string {
@@ -890,6 +944,8 @@ func (d *TemplateData) GetEnvVars() ([]corev1.EnvVar, error) {
 	}
 	if cluster.Spec.Cloud.Kubevirt != nil {
 		vars = append(vars, corev1.EnvVar{Name: "KUBEVIRT_KUBECONFIG", ValueFrom: refTo(KubeVirtKubeconfig)})
+		vars = append(vars, corev1.EnvVar{Name: "PROJECT_ID", Value: cluster.Labels["project-id"]})
+		vars = append(vars, corev1.EnvVar{Name: "CLUSTER_ID", Value: cluster.Name})
 	}
 	if cluster.Spec.Cloud.Alibaba != nil {
 		vars = append(vars, corev1.EnvVar{Name: "ALIBABA_ACCESS_KEY_ID", ValueFrom: refTo(AlibabaAccessKeyID)})
@@ -1054,6 +1110,10 @@ func (d *TemplateData) ParseFluentBitRecords() (*kubermaticv1.AuditSidecarConfig
 	}
 
 	return config, nil
+}
+
+func (d *TemplateData) DRAEnabled() bool {
+	return d.dra
 }
 
 func expandVariables(input string, vars map[string]string) string {

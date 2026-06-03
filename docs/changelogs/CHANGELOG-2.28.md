@@ -3,6 +3,164 @@
 - [v2.28.0](#v2280)
 - [v2.28.1](#v2281)
 - [v2.28.2](#v2282)
+- [v2.28.3](#v2283)
+- [v2.28.4](#v2284)
+- [v2.28.5](#v2285)
+- [v2.28.6](#v2286)
+- [v2.28.7](#v2287)
+- [v2.28.8](#v2288)
+- [v2.28.9](#v2289)
+- [v2.28.10](#v22810)
+- [v2.28.11](#v22811)
+
+## v2.28.11
+
+**GitHub release: [v2.28.11](https://github.com/kubermatic/kubermatic/releases/tag/v2.28.11)**
+
+### Bugfixes
+
+- SSH keys from machine deployment providerSpec are no longer removed from worker nodes by the user-ssh-key-agent ([#15863](https://github.com/kubermatic/kubermatic/pull/15863))
+- Cluster/machine metrics endpoints return an empty result for unavailable BYO CNI user clusters to avoid triggering KubermaticAPITooManyErrors alerts ([#8060](https://github.com/kubermatic/dashboard/pull/8060))
+- Fix background-repeat for multi-line 'menu-item' icons on low zoom ([#8054](https://github.com/kubermatic/dashboard/pull/8054))
+- Fix the default OS image selection to correctly use the enabled OS when Ubuntu is disabled globally or per project ([#7927](https://github.com/kubermatic/dashboard/pull/7927))
+- Fix VSphere provider ignoring project-level allowed operating system restrictions during cluster creation ([#8010](https://github.com/kubermatic/dashboard/pull/8010))
+- Fix project creation dialog not applying admin-configured allowed operating systems to new projects ([#7956](https://github.com/kubermatic/dashboard/pull/7956))
+
+### Updates
+
+- Update vSphere CSI driver to v3.6.0 to pick up upstream session and ListView handling improvements that address vSphere volume attach failures after vCenter session expiry ([#15766](https://github.com/kubermatic/kubermatic/pull/15766))
+- Add support for k8s patch release v1.33.12 ([#15872](https://github.com/kubermatic/kubermatic/pull/15872))
+
+## v2.28.10
+
+**GitHub release:[v2.28.10](https://github.com/kubermatic/kubermatic/releases/tag/v2.28.10)**
+
+### Supported Kubernetes Versions
+
+- Add support for k8s patch release v1.33.11 ([#15750](https://github.com/kubermatic/kubermatic/pull/15750))
+
+### Updates
+
+- Update gpu-operator application to v26.3.0 ([#15761](https://github.com/kubermatic/kubermatic/pull/15761))
+
+## v2.28.9
+
+**GitHub release: [v2.28.9](https://github.com/kubermatic/kubermatic/releases/tag/v2.28.9)**
+
+### Supported Kubernetes Versions
+
+- Add support for k8s patch release v1.33.10 ([#15682](https://github.com/kubermatic/kubermatic/pull/15682))
+
+### New Features
+
+- Add new alerts providing insights into health of cortex used by user-cluster MLA ([#15630](https://github.com/kubermatic/kubermatic/pull/15630))
+- Seed Grafana now has 12 new grafana dashboards under MLA Stack folder ([#15633](https://github.com/kubermatic/kubermatic/pull/15633))
+
+### Bugfixes
+
+- Respect datacenter selectors for default/enforced apps.Prevent duplicate app additions when switching datacenters.Fix loading enforced apps in the edit/customize cluster template ([#7937](https://github.com/kubermatic/dashboard/pull/7937))
+
+## v2.28.8
+
+**GitHub release: [v2.28.8](https://github.com/kubermatic/kubermatic/releases/tag/v2.28.8)**
+
+### Supported Kubernetes Versions
+
+- Add support for k8s patch release v1.33.9/v1.32.13 ([#15545](https://github.com/kubermatic/kubermatic/pull/15545))
+
+### Bugfixes
+
+- Fix alertmanager service port name reference after upstream chart migration ([#15512](https://github.com/kubermatic/kubermatic/pull/15512))
+
+## v2.28.7
+
+**GitHub release: [v2.28.7](https://github.com/kubermatic/kubermatic/releases/tag/v2.28.7)**
+
+### Supported Kubernetes Versions
+
+- Add support for the latest k8s patch release v1.33.8 and v1.32.12 ([#15466](https://github.com/kubermatic/kubermatic/pull/15466))
+
+### Bugfixes
+
+- Add optional Seed setting `spec.nodeportProxy.envoy.replicas` to configure the `nodeport-proxy-envoy` replica count. If unset, existing default behavior remains (`3` replicas) ([#15464](https://github.com/kubermatic/kubermatic/pull/15464))
+
+### Updates
+
+- Update nginx-ingress controller from 1.12.6 to 1.13.7 ([#15467](https://github.com/kubermatic/kubermatic/pull/15467))
+
+## v2.28.6
+
+**GitHub release: [v2.28.6](https://github.com/kubermatic/kubermatic/releases/tag/v2.28.6)**
+
+### Updates
+
+- Update Go version to 1.24.12 ([#15325](https://github.com/kubermatic/kubermatic/pull/15325), [#7781](https://github.com/kubermatic/dashboard/pull/7781))
+- Users can now configure additional arguments to oauth2-proxy pods. (useful for seed and user-mla) ([#15279](https://github.com/kubermatic/kubermatic/pull/15279))
+
+## v2.28.5
+
+**GitHub release: [v2.28.5](https://github.com/kubermatic/kubermatic/releases/tag/v2.28.5)**
+
+### Breaking Changes
+
+This release contains changes that require additional attention, please read the following items carefully.
+
+- Fix cluster-autoscaler RBAC permissions. cluster-autoscaler application needs to be re-installed to force recreating ApplicationInstallation resource, in order to get the new updated default values.yaml ([#15152](https://github.com/kubermatic/kubermatic/pull/15152))
+
+### Bugfixes
+
+- Minor upgrade of cortex to fix repeating errors in the logs ([#15258](https://github.com/kubermatic/kubermatic/pull/15258))
+- Delete orphaned UserProjectBinding resources on User or Project deletion ([#15181](https://github.com/kubermatic/kubermatic/pull/15181))
+- Add omitempty to component settings fields to allow partial configuration ([#15182](https://github.com/kubermatic/kubermatic/pull/15182))
+
+### Updates
+
+- Add support of k8s patch releases v1.33.7 ([#15247](https://github.com/kubermatic/kubermatic/pull/15247))
+
+## v2.28.4
+
+**GitHub release: [v2.28.4](https://github.com/kubermatic/kubermatic/releases/tag/v2.28.4)**
+
+### Supported Kubernetes Versions
+
+- Add support for k8s patch releases v1.33.6/v1.32.10/v1.31.14 ([#15172](https://github.com/kubermatic/kubermatic/pull/15172))
+
+### New Features
+
+- Update to KubeLB [v1.1.6](https://docs.kubermatic.com/kubelb/v1.1/release-notes/#v116) ([#15166](https://github.com/kubermatic/kubermatic/pull/15166))
+
+### Bugfixes
+
+- Fix invalid `PolicyTemplate` resources that set both `spec.enforced` and `spec.namespacedPolicy`, and improve `PolicyBinding` resources cleanup ([#15110](https://github.com/kubermatic/kubermatic/pull/15110))
+- Fix Load Balancer assignment in Kubernetes 1.33 and 1.34 GCP clusters ([#15123](https://github.com/kubermatic/kubermatic/pull/15123))
+- Fix policy template selector targeting with empty target selectors ([#15145](https://github.com/kubermatic/kubermatic/pull/15145))
+- Fix the default policy catalog `--deploy-default-policy-template-catalog` flag timing out in the installer ([#15099](https://github.com/kubermatic/kubermatic/pull/15099))
+- Remove deprecation notice for `defaultComponentSettings` in the Seed Resource ([#15102](https://github.com/kubermatic/kubermatic/pull/15102))
+- Use the lowercase email when creating a user object ([#7629](https://github.com/kubermatic/dashboard/pull/7629))
+- A regression bug was fixed which introduced errors when a user tried to login with a user email containing uppercase letters and the one with only lowercase was already stored ([#7671](https://github.com/kubermatic/dashboard/pull/7671))
+- Fix a bug where the user cluster logging/monitoring checkboxes were shown even though user cluster MLA was disabled in the seed settings ([#7681](https://github.com/kubermatic/dashboard/pull/7681))
+- Fix a possible null pointer exception for `isGlobalViewer` ([#7610](https://github.com/kubermatic/dashboard/pull/7610))
+- Fix: Kyverno policy bindings disappear when the template selector no longer matches the cluster.Enforcing Kyverno Policy disables the Namespaced option ([#7654](https://github.com/kubermatic/dashboard/pull/7654))
+
+## v2.28.3
+
+**GitHub release: [v2.28.3](https://github.com/kubermatic/kubermatic/releases/tag/v2.28.3)**
+
+### Supported Kubernetes Versions
+
+- Add support for k8s patch releases v1.33.5/1.32.9/1.31.13 ([#14998](https://github.com/kubermatic/kubermatic/pull/14998))
+
+### Bugfixes
+
+- A bug was fixed where evicted kubevirt vms configured with evictionStrategy `LiveMigrate` were treated like vms with `External` evictionStrategy by deleting the related machine object ([#14736](https://github.com/kubermatic/kubermatic/pull/14736))
+- A caching functionality for used http.Transports when initializing minio clients in seed-controller-manager was added to avoid tcp connection leaks ([#14955](https://github.com/kubermatic/kubermatic/pull/14955), [#7594](https://github.com/kubermatic/dashboard/pull/7594))
+- Fix web terminal token expiration by refreshing expired tokens automatically ([#7551](https://github.com/kubermatic/dashboard/pull/7551))
+
+### Updates
+
+- Update Go version to 1.24.7 ([#14947](https://github.com/kubermatic/kubermatic/pull/14947), [#7555](https://github.com/kubermatic/dashboard/pull/7555))
+- Update machine-controller version to [v1.62.1](https://github.com/kubermatic/machine-controller/releases/tag/v1.62.1) and operating-system-manager version to [v1.7.6](https://github.com/kubermatic/operating-system-manager/releases/tag/v1.7.6) ([#15049](https://github.com/kubermatic/kubermatic/pull/15049))
+- Update nginx-ingress-controller version to 1.12.6 ([#15037](https://github.com/kubermatic/kubermatic/pull/15037))
 
 ## v2.28.2
 

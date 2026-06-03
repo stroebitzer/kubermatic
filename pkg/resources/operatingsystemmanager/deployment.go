@@ -41,23 +41,21 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-var (
-	controllerResourceRequirements = map[string]*corev1.ResourceRequirements{
-		resources.OperatingSystemManagerContainerName: {
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("128Mi"),
-				corev1.ResourceCPU:    resource.MustParse("50m"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("512Mi"),
-				corev1.ResourceCPU:    resource.MustParse("1"),
-			},
+var controllerResourceRequirements = map[string]*corev1.ResourceRequirements{
+	resources.OperatingSystemManagerContainerName: {
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+			corev1.ResourceCPU:    resource.MustParse("50m"),
 		},
-	}
-)
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+			corev1.ResourceCPU:    resource.MustParse("1"),
+		},
+	},
+}
 
 const (
-	Tag = "v1.7.5"
+	Tag = "v1.10.6"
 )
 
 type operatingSystemManagerData interface {
@@ -71,6 +69,8 @@ type operatingSystemManagerData interface {
 	OperatingSystemManagerImageTag() string
 	OperatingSystemManagerImageRepository() string
 	OperatingSystemManagerDefaultOSPsDisabled() bool
+	DRAEnabled() bool
+	SupportsFailureDomainZoneAntiAffinity() bool
 }
 
 // DeploymentReconciler returns the function to create and update the operating system manager deployment.
@@ -103,9 +103,17 @@ func DeploymentReconcilerWithoutInitWrapper(data operatingSystemManagerData) rec
 			baseLabels := resources.BaseAppLabels(resources.OperatingSystemManagerDeploymentName, nil)
 			kubernetes.EnsureLabels(dep, baseLabels)
 
+			hostAntiAffinity := kubermaticv1.AntiAffinityType(kubermaticv1.AntiAffinityTypePreferred)
+			zoneAntiAffinity := kubermaticv1.AntiAffinityType(kubermaticv1.AntiAffinityTypePreferred)
 			dep.Spec.Replicas = resources.Int32(1)
-			if data.Cluster().Spec.ComponentsOverride.OperatingSystemManager != nil && data.Cluster().Spec.ComponentsOverride.OperatingSystemManager.Replicas != nil {
-				dep.Spec.Replicas = data.Cluster().Spec.ComponentsOverride.OperatingSystemManager.Replicas
+			override := data.Cluster().Spec.ComponentsOverride.OperatingSystemManager
+			if override != nil {
+				hostAntiAffinity = override.HostAntiAffinity
+				zoneAntiAffinity = override.ZoneAntiAffinity
+				if override.Replicas != nil {
+					dep.Spec.Replicas = override.Replicas
+				}
+				dep.Spec.Template.Spec.Tolerations = override.Tolerations
 			}
 			dep.Spec.Selector = &metav1.LabelSelector{
 				MatchLabels: baseLabels,
@@ -234,8 +242,12 @@ func DeploymentReconcilerWithoutInitWrapper(data operatingSystemManagerData) rec
 				return nil, fmt.Errorf("failed to set resource requirements: %w", err)
 			}
 
-			if data.Cluster().Spec.ComponentsOverride.OperatingSystemManager != nil && len(data.Cluster().Spec.ComponentsOverride.OperatingSystemManager.Tolerations) > 0 {
-				dep.Spec.Template.Spec.Tolerations = data.Cluster().Spec.ComponentsOverride.OperatingSystemManager.Tolerations
+			if dep.Spec.Replicas != nil && *dep.Spec.Replicas > 1 {
+				dep.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(resources.OperatingSystemManagerDeploymentName, hostAntiAffinity)
+				if data.SupportsFailureDomainZoneAntiAffinity() {
+					failureDomainZoneAntiAffinity := resources.FailureDomainZoneAntiAffinity(resources.OperatingSystemManagerDeploymentName, zoneAntiAffinity)
+					dep.Spec.Template.Spec.Affinity = resources.MergeAffinities(dep.Spec.Template.Spec.Affinity, failureDomainZoneAntiAffinity)
+				}
 			}
 
 			return dep, nil
@@ -278,8 +290,17 @@ func getFlags(data operatingSystemManagerData, cs *clusterSpec) []string {
 
 	flags = appendProxyFlags(flags, nodeSettings, data.Cluster())
 
+	kubeletFeatureGates := []string{}
 	if csiMigrationFeatureGates := data.GetCSIMigrationFeatureGates(nil); len(csiMigrationFeatureGates) > 0 {
-		flags = append(flags, "-node-kubelet-feature-gates", strings.Join(csiMigrationFeatureGates, ","))
+		kubeletFeatureGates = append(kubeletFeatureGates, csiMigrationFeatureGates...)
+	}
+
+	if data.DRAEnabled() {
+		kubeletFeatureGates = append(kubeletFeatureGates, "DynamicResourceAllocation=true")
+	}
+
+	if len(kubeletFeatureGates) > 0 {
+		flags = append(flags, "-node-kubelet-feature-gates", strings.Join(kubeletFeatureGates, ","))
 	}
 
 	if imagePullSecret := data.Cluster().Spec.ImagePullSecret; imagePullSecret != nil {
@@ -404,9 +425,7 @@ func getContainerdFlags(crid *kubermaticv1.ContainerRuntimeOpts) []string {
 		return flags
 	}
 
-	var (
-		registries []string
-	)
+	var registries []string
 
 	// fetch all keys from the map and sort them
 	// for stable order.
@@ -470,9 +489,7 @@ func appendContainerRuntimeFlags(flags []string, data operatingSystemManagerData
 	}
 
 	containerdFlags := containerdFlags(nodeSettings, data.Cluster())
-	for _, flag := range containerdFlags {
-		flags = append(flags, flag, "")
-	}
+	flags = append(flags, containerdFlags...)
 
 	return flags
 }

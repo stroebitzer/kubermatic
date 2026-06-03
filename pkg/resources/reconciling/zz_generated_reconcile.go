@@ -1,5 +1,5 @@
 /*
-Copyright 2025 The Kubermatic Kubernetes Platform contributors.
+Copyright 2026 The Kubermatic Kubernetes Platform contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ import (
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	instancetypev1alpha1 "kubevirt.io/api/instancetype/v1alpha1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // VerticalPodAutoscalerReconciler defines an interface to create/update VerticalPodAutoscalers.
@@ -1258,7 +1259,7 @@ func ReconcileBackupStorageLocations(ctx context.Context, namedFactories []Named
 	return nil
 }
 
-// KyvernoClusterPolicyReconciler defines an interface to create/update ClusterPolicys.
+// KyvernoClusterPolicyReconciler defines an interface to create/update ClusterPolicies.
 type KyvernoClusterPolicyReconciler = func(existing *kyvernov1.ClusterPolicy) (*kyvernov1.ClusterPolicy, error)
 
 // NamedKyvernoClusterPolicyReconcilerFactory returns the name of the resource and the corresponding Reconciler function.
@@ -1275,8 +1276,8 @@ func KyvernoClusterPolicyObjectWrapper(reconciler KyvernoClusterPolicyReconciler
 	}
 }
 
-// ReconcileKyvernoClusterPolicys will create and update the KyvernoClusterPolicys coming from the passed KyvernoClusterPolicyReconciler slice.
-func ReconcileKyvernoClusterPolicys(ctx context.Context, namedFactories []NamedKyvernoClusterPolicyReconcilerFactory, namespace string, client ctrlruntimeclient.Client, objectModifiers ...reconciling.ObjectModifier) error {
+// ReconcileKyvernoClusterPolicies will create and update the KyvernoClusterPolicies coming from the passed KyvernoClusterPolicyReconciler slice.
+func ReconcileKyvernoClusterPolicies(ctx context.Context, namedFactories []NamedKyvernoClusterPolicyReconcilerFactory, namespace string, client ctrlruntimeclient.Client, objectModifiers ...reconciling.ObjectModifier) error {
 	for _, factory := range namedFactories {
 		name, reconciler := factory()
 		reconcileObject := KyvernoClusterPolicyObjectWrapper(reconciler)
@@ -1295,7 +1296,7 @@ func ReconcileKyvernoClusterPolicys(ctx context.Context, namedFactories []NamedK
 	return nil
 }
 
-// KyvernoPolicyReconciler defines an interface to create/update Policys.
+// KyvernoPolicyReconciler defines an interface to create/update Policies.
 type KyvernoPolicyReconciler = func(existing *kyvernov1.Policy) (*kyvernov1.Policy, error)
 
 // NamedKyvernoPolicyReconcilerFactory returns the name of the resource and the corresponding Reconciler function.
@@ -1312,8 +1313,8 @@ func KyvernoPolicyObjectWrapper(reconciler KyvernoPolicyReconciler) reconciling.
 	}
 }
 
-// ReconcileKyvernoPolicys will create and update the KyvernoPolicys coming from the passed KyvernoPolicyReconciler slice.
-func ReconcileKyvernoPolicys(ctx context.Context, namedFactories []NamedKyvernoPolicyReconcilerFactory, namespace string, client ctrlruntimeclient.Client, objectModifiers ...reconciling.ObjectModifier) error {
+// ReconcileKyvernoPolicies will create and update the KyvernoPolicies coming from the passed KyvernoPolicyReconciler slice.
+func ReconcileKyvernoPolicies(ctx context.Context, namedFactories []NamedKyvernoPolicyReconcilerFactory, namespace string, client ctrlruntimeclient.Client, objectModifiers ...reconciling.ObjectModifier) error {
 	for _, factory := range namedFactories {
 		name, reconciler := factory()
 		reconcileObject := KyvernoPolicyObjectWrapper(reconciler)
@@ -1326,6 +1327,117 @@ func ReconcileKyvernoPolicys(ctx context.Context, namedFactories []NamedKyvernoP
 
 		if err := reconciling.EnsureNamedObject(ctx, types.NamespacedName{Namespace: namespace, Name: name}, reconcileObject, client, &kyvernov1.Policy{}, false); err != nil {
 			return fmt.Errorf("failed to ensure Policy %s/%s: %w", namespace, name, err)
+		}
+	}
+
+	return nil
+}
+
+// GatewayAPIGatewayReconciler defines an interface to create/update Gateways.
+type GatewayAPIGatewayReconciler = func(existing *gatewayapiv1.Gateway) (*gatewayapiv1.Gateway, error)
+
+// NamedGatewayAPIGatewayReconcilerFactory returns the name of the resource and the corresponding Reconciler function.
+type NamedGatewayAPIGatewayReconcilerFactory = func() (name string, reconciler GatewayAPIGatewayReconciler)
+
+// GatewayAPIGatewayObjectWrapper adds a wrapper so the GatewayAPIGatewayReconciler matches ObjectReconciler.
+// This is needed as Go does not support function interface matching.
+func GatewayAPIGatewayObjectWrapper(reconciler GatewayAPIGatewayReconciler) reconciling.ObjectReconciler {
+	return func(existing ctrlruntimeclient.Object) (ctrlruntimeclient.Object, error) {
+		if existing != nil {
+			return reconciler(existing.(*gatewayapiv1.Gateway))
+		}
+		return reconciler(&gatewayapiv1.Gateway{})
+	}
+}
+
+// ReconcileGatewayAPIGateways will create and update the GatewayAPIGateways coming from the passed GatewayAPIGatewayReconciler slice.
+func ReconcileGatewayAPIGateways(ctx context.Context, namedFactories []NamedGatewayAPIGatewayReconcilerFactory, namespace string, client ctrlruntimeclient.Client, objectModifiers ...reconciling.ObjectModifier) error {
+	for _, factory := range namedFactories {
+		name, reconciler := factory()
+		reconcileObject := GatewayAPIGatewayObjectWrapper(reconciler)
+		reconcileObject = reconciling.CreateWithNamespace(reconcileObject, namespace)
+		reconcileObject = reconciling.CreateWithName(reconcileObject, name)
+
+		for _, objectModifier := range objectModifiers {
+			reconcileObject = objectModifier(reconcileObject)
+		}
+
+		if err := reconciling.EnsureNamedObject(ctx, types.NamespacedName{Namespace: namespace, Name: name}, reconcileObject, client, &gatewayapiv1.Gateway{}, false); err != nil {
+			return fmt.Errorf("failed to ensure Gateway %s/%s: %w", namespace, name, err)
+		}
+	}
+
+	return nil
+}
+
+// GatewayAPIGatewayClassReconciler defines an interface to create/update GatewayClasss.
+type GatewayAPIGatewayClassReconciler = func(existing *gatewayapiv1.GatewayClass) (*gatewayapiv1.GatewayClass, error)
+
+// NamedGatewayAPIGatewayClassReconcilerFactory returns the name of the resource and the corresponding Reconciler function.
+type NamedGatewayAPIGatewayClassReconcilerFactory = func() (name string, reconciler GatewayAPIGatewayClassReconciler)
+
+// GatewayAPIGatewayClassObjectWrapper adds a wrapper so the GatewayAPIGatewayClassReconciler matches ObjectReconciler.
+// This is needed as Go does not support function interface matching.
+func GatewayAPIGatewayClassObjectWrapper(reconciler GatewayAPIGatewayClassReconciler) reconciling.ObjectReconciler {
+	return func(existing ctrlruntimeclient.Object) (ctrlruntimeclient.Object, error) {
+		if existing != nil {
+			return reconciler(existing.(*gatewayapiv1.GatewayClass))
+		}
+		return reconciler(&gatewayapiv1.GatewayClass{})
+	}
+}
+
+// ReconcileGatewayAPIGatewayClasss will create and update the GatewayAPIGatewayClasss coming from the passed GatewayAPIGatewayClassReconciler slice.
+func ReconcileGatewayAPIGatewayClasss(ctx context.Context, namedFactories []NamedGatewayAPIGatewayClassReconcilerFactory, namespace string, client ctrlruntimeclient.Client, objectModifiers ...reconciling.ObjectModifier) error {
+	for _, factory := range namedFactories {
+		name, reconciler := factory()
+		reconcileObject := GatewayAPIGatewayClassObjectWrapper(reconciler)
+		reconcileObject = reconciling.CreateWithNamespace(reconcileObject, namespace)
+		reconcileObject = reconciling.CreateWithName(reconcileObject, name)
+
+		for _, objectModifier := range objectModifiers {
+			reconcileObject = objectModifier(reconcileObject)
+		}
+
+		if err := reconciling.EnsureNamedObject(ctx, types.NamespacedName{Namespace: namespace, Name: name}, reconcileObject, client, &gatewayapiv1.GatewayClass{}, false); err != nil {
+			return fmt.Errorf("failed to ensure GatewayClass %s/%s: %w", namespace, name, err)
+		}
+	}
+
+	return nil
+}
+
+// GatewayAPIHTTPRouteReconciler defines an interface to create/update HTTPRoutes.
+type GatewayAPIHTTPRouteReconciler = func(existing *gatewayapiv1.HTTPRoute) (*gatewayapiv1.HTTPRoute, error)
+
+// NamedGatewayAPIHTTPRouteReconcilerFactory returns the name of the resource and the corresponding Reconciler function.
+type NamedGatewayAPIHTTPRouteReconcilerFactory = func() (name string, reconciler GatewayAPIHTTPRouteReconciler)
+
+// GatewayAPIHTTPRouteObjectWrapper adds a wrapper so the GatewayAPIHTTPRouteReconciler matches ObjectReconciler.
+// This is needed as Go does not support function interface matching.
+func GatewayAPIHTTPRouteObjectWrapper(reconciler GatewayAPIHTTPRouteReconciler) reconciling.ObjectReconciler {
+	return func(existing ctrlruntimeclient.Object) (ctrlruntimeclient.Object, error) {
+		if existing != nil {
+			return reconciler(existing.(*gatewayapiv1.HTTPRoute))
+		}
+		return reconciler(&gatewayapiv1.HTTPRoute{})
+	}
+}
+
+// ReconcileGatewayAPIHTTPRoutes will create and update the GatewayAPIHTTPRoutes coming from the passed GatewayAPIHTTPRouteReconciler slice.
+func ReconcileGatewayAPIHTTPRoutes(ctx context.Context, namedFactories []NamedGatewayAPIHTTPRouteReconcilerFactory, namespace string, client ctrlruntimeclient.Client, objectModifiers ...reconciling.ObjectModifier) error {
+	for _, factory := range namedFactories {
+		name, reconciler := factory()
+		reconcileObject := GatewayAPIHTTPRouteObjectWrapper(reconciler)
+		reconcileObject = reconciling.CreateWithNamespace(reconcileObject, namespace)
+		reconcileObject = reconciling.CreateWithName(reconcileObject, name)
+
+		for _, objectModifier := range objectModifiers {
+			reconcileObject = objectModifier(reconcileObject)
+		}
+
+		if err := reconciling.EnsureNamedObject(ctx, types.NamespacedName{Namespace: namespace, Name: name}, reconcileObject, client, &gatewayapiv1.HTTPRoute{}, false); err != nil {
+			return fmt.Errorf("failed to ensure HTTPRoute %s/%s: %w", namespace, name, err)
 		}
 	}
 

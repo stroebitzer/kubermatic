@@ -315,12 +315,27 @@ func createExampleKubermaticConfiguration() *kubermaticv1.KubermaticConfiguratio
 		Spec: kubermaticv1.KubermaticConfigurationSpec{
 			Ingress: kubermaticv1.KubermaticIngressConfiguration{
 				Domain: "example.com",
+				Gateway: &kubermaticv1.KubermaticGatewayConfiguration{
+					ClassName: "kubermatic-envoy-gateway",
+				},
 			},
 			FeatureGates: map[string]bool{},
 			API:          kubermaticv1.KubermaticAPIConfiguration{},
 			SeedController: kubermaticv1.KubermaticSeedControllerConfiguration{
 				BackupStoreContainer:  defaulting.DefaultBackupStoreContainer,
 				BackupDeleteContainer: defaulting.DefaultBackupDeleteContainer,
+			},
+			Applications: kubermaticv1.ApplicationDefinitionsConfiguration{
+				CatalogManager: kubermaticv1.CatalogManagerConfiguration{
+					Image: kubermaticv1.CatalogManagerImageConfiguration{
+						Repository: defaulting.DefaultApplicationManagerImageRepository,
+						Tag:        defaulting.DefaultApplicationManagerImageTag,
+					},
+					Apps: []string{
+						"cert-manager",
+						"argo-cd",
+					},
+				},
 			},
 		},
 	}
@@ -461,13 +476,13 @@ func validateAllFieldsAreDefined(item interface{}) error {
 }
 
 func validateReflect(value reflect.Value, path []string) error {
-	typ := value.Type()
+	valueType := value.Type()
 
 	// resolve pointer types to their underlying value
-	if typ.Kind() == reflect.Ptr {
+	if valueType.Kind() == reflect.Ptr {
 		if value.IsNil() {
 			// nil-pointers are not allowed for complex types
-			if isComplexType(typ) {
+			if isComplexType(valueType) {
 				return fmt.Errorf("%s is invalid: field is nil", strings.Join(path, "."))
 			}
 
@@ -475,21 +490,21 @@ func validateReflect(value reflect.Value, path []string) error {
 		}
 
 		value = value.Elem()
-		typ = value.Type()
+		valueType = value.Type()
 	}
 
 	p := path
 
-	switch typ.Kind() {
+	switch valueType.Kind() {
 	case reflect.Struct:
-		for i := range typ.NumField() {
-			fieldName := typ.Field(i).Name
+		for i := range valueType.NumField() {
+			fieldName := valueType.Field(i).Name
 
 			p = append(p, fieldName)
 
 			if err := validateReflect(value.Field(i), p); err != nil {
 				// super special exception: allow not defining the Fake cloud provider
-				if typ.Name() == "DatacenterSpec" && fieldName != "Fake" {
+				if valueType.Name() == "DatacenterSpec" && fieldName != "Fake" {
 					return err
 				}
 			}

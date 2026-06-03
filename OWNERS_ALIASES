@@ -3,16 +3,19 @@
 
 aliases:
   sig-api:
+    - ahmadhamzh
     - ahmedwaleedmalik
+    - khizerrehan
     - simontheleg
     - waseem826
   sig-app-management:
+    - adoi
     - ahmedwaleedmalik
     - archups
     - buraksekili
     - cnvergence
+    - csengerszabo
     - dharapvj
-    - julioc-p
     - mohamed-rafraf
     - simontheleg
     - soer3n
@@ -22,9 +25,8 @@ aliases:
     - ahmedwaleedmalik
     - buraksekili
     - cnvergence
-    - embik
-    - julioc-p
     - kron4eg
+    - mgoltzsche
     - moadqassem
     - moelsayed
     - mohamed-rafraf
@@ -33,6 +35,7 @@ aliases:
     - xmudrii
     - xrstf
   sig-networking:
+    - adoi
     - buraksekili
     - cnvergence
     - moadqassem
@@ -40,4 +43,5 @@ aliases:
   sig-ui:
     - ahmadhamzh
     - ahmedwaleedmalik
+    - khizerrehan
     - waseem826

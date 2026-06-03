@@ -9,7 +9,7 @@
 .idea
 .kubeconfig
 /reports
-/vendor
+*vendor
 _artifacts/*
 _build
 _cache
@@ -19,6 +19,7 @@ download-gocache
 .envrc
 /.vscode
 _certs
+.history
 
 # this is filled during release
 charts/kubermatic-operator/crd/k8c.io

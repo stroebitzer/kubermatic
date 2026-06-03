@@ -7,6 +7,8 @@ metadata:
 spec:
   # Optional: AuditLogging empowers admins to centrally configure Kubernetes API audit logging for all user clusters in the seed (https://kubernetes.io/docs/tasks/debug-application-cluster/audit/ ).
   auditLogging: null
+  # AuthenticationConfiguration allows to refer to a Secret that holds the AuthenticationConfiguration that should be applied to all user clusters in the seed by default.
+  authenticationConfiguration: null
   # Optional: Country of the seed as ISO-3166 two-letter code, e.g. DE or UK.
   # For informational purposes in the Kubermatic dashboard only.
   country: ""
@@ -67,6 +69,8 @@ spec:
         # APIServerServiceType is the service type used for API Server service `apiserver-external` for the user clusters.
         # By default, the type of service that will be used is determined by the `ExposeStrategy` used for the cluster.
         apiServerServiceType: null
+        # AuthenticationConfiguration allows to refer to a Secret that holds the AuthenticationConfiguration that should be applied to all user clusters in the seed by default.
+        authenticationConfiguration: null
         # AWS configures an Amazon Web Services (AWS) datacenter.
         aws:
           # List of AMIs to use for a given operating system.
@@ -198,6 +202,7 @@ spec:
           dnsPolicy: ""
           # Optional: EnableDedicatedCPUs enables the assignment of dedicated cpus instead of resource requests and limits for a virtual machine.
           # Defaults to false.
+
           # Deprecated: Use .kubevirt.usePodResourcesCPU instead.
           enableDedicatedCpus: false
           # Optional: EnableDefaultNetworkPolicies enables deployment of default network policies like cluster isolation.
@@ -222,7 +227,9 @@ spec:
           # In the tenant cluster, the created StorageClass name will have as name:
           # kubevirt-<infra-storageClass-name>
           infraStorageClasses:
-            - # Optional: IsDefaultClass. If true, the created StorageClass in the tenant cluster will be annotated with:
+            - # AllowVolumeExpansion shows whether the storage class allow volume expand.
+              allowVolumeExpansion: false
+              # Optional: IsDefaultClass. If true, the created StorageClass in the tenant cluster will be annotated with:
               # storageclass.kubernetes.io/is-default-class : true
               # If missing or false, annotation will be:
               # storageclass.kubernetes.io/is-default-class : false
@@ -232,6 +239,9 @@ spec:
               # and services.
               labels: null
               name: rook-ceph-block
+              # ReclaimPolicy controls the reclaimPolicy for dynamically provisioned PersistentVolumes of this storage class.
+              # Defaults to Delete.
+              reclaimPolicy: ""
               # Regions represents a larger domain, made up of one or more zones. It is uncommon for Kubernetes clusters
               # to span multiple regions
               regions: null
@@ -248,6 +258,9 @@ spec:
               # Zones represent a logical failure domain. It is common for Kubernetes clusters to span multiple zones
               # for increased availability
               zones: null
+          # Optional: InfraVolumeSnapshotClasses contains a list of KubeVirt infra cluster VolumeSnapshotClasses names used
+          # to initialise VolumeSnapshotClasses in the tenant cluster.
+          infraVolumeSnapshotClasses: null
           # Optional: MatchSubnetAndStorageLocation if set to true, the region and zone of the subnet and storage class must match. For
           # example, if the storage class has the region `eu` and zone was `central`, the subnet must be in the same region and zone.
           # otherwise KKP will reject the creation of the machine deployment and eventually the cluster.
@@ -262,6 +275,10 @@ spec:
           # VMEvictionStrategy describes the strategy to follow when a node drain occurs. If not set the default
           # value is External and the VM will be protected by a PDB.
           vmEvictionStrategy: ""
+        # Kyverno configures the Kyverno policy engine settings at the datacenter level.
+        # These settings override seed and global configuration and apply to all user clusters
+        # in this datacenter.
+        kyverno: null
         # Optional: MachineFlavorFilter is used to filter out allowed machine flavors based on the specified resource limits like CPU, Memory, and GPU etc.
         machineFlavorFilter:
           # Include VMs with GPU
@@ -341,6 +358,10 @@ spec:
             minimumMemory: 0
             # VCPUs is the minimum required amount of (virtual) CPUs
             minimumVCPUs: 0
+          # NodeVolumeAttachLimit defines the maximum number of volumes that can be
+          # attached to a single node. If set, this value overrides the default
+          # OpenStack volume attachment limit.
+          nodeVolumeAttachLimit: null
           # Authentication region name
           region: ""
           # Optional: Gets mapped to the "trust-device-path" setting in the cloud config.
@@ -357,11 +378,6 @@ spec:
           rhel: ""
           rockylinux: ""
           ubuntu: ""
-        # Deprecated: The Packet / Equinix Metal provider is deprecated and will be REMOVED IN VERSION 2.29.
-        # This provider is no longer supported. Migrate your configurations away from "packet" immediately.
-        # Packet configures an Equinix Metal datacenter.
-        # NOOP.
-        packet: null
         # Optional: ProviderReconciliationInterval is the time that must have passed since a
         # Cluster's status.lastProviderReconciliation to make the cluster controller
         # perform an in-depth provider reconciliation, where for example missing security
@@ -442,17 +458,31 @@ spec:
   # to default all new created clusters
   defaultClusterTemplate: ""
   # DefaultComponentSettings are default values to set for newly created clusters.
-  # Deprecated: Use DefaultClusterTemplate instead.
   defaultComponentSettings:
     # Apiserver configures kube-apiserver settings.
     apiserver:
       endpointReconcilingDisabled: null
+      # HostAntiAffinity allows to enforce a certain type of host anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      hostAntiAffinity: ""
       nodePortRange: 30000-32767
+      # Replicas allows to override the number of desired Pods for the Deployment.
       replicas: 2
+      # Resources allows to override the resource requirements.
       resources: null
+      # Tolerations allows to override the scheduling tolerations for Pods.
       tolerations: null
+      # ZoneAntiAffinity allows to enforce a certain type of availability zone anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      zoneAntiAffinity: ""
     # ControllerManager configures kube-controller-manager settings.
     controllerManager:
+      # HostAntiAffinity allows to enforce a certain type of host anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      hostAntiAffinity: ""
       leaderElection:
         # LeaseDurationSeconds is the duration in seconds that non-leader candidates
         # will wait to force acquire leadership. This is measured against time of
@@ -464,11 +494,20 @@ spec:
         # RetryPeriodSeconds is the duration in seconds the LeaderElector clients
         # should wait between tries of actions.
         retryPeriodSeconds: null
+      # Replicas allows to override the number of desired Pods for the Deployment.
       replicas: 1
+      # Resources allows to override the resource requirements.
       resources: null
+      # Tolerations allows to override the scheduling tolerations for Pods.
       tolerations: null
+      # ZoneAntiAffinity allows to enforce a certain type of availability zone anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      zoneAntiAffinity: ""
     # CoreDNS configures CoreDNS deployed as part of the cluster control plane.
     coreDNS: null
+    # EnvoyAgent configures the envoy-agent deployed in the usercluster.
+    envoyAgent: null
     # Etcd configures the etcd ring used to store Kubernetes data.
     etcd:
       # ClusterSize is the number of replicas created for etcd. This should be an
@@ -504,26 +543,40 @@ spec:
     konnectivityProxy:
       # Args configures arguments (flags) for the Konnectivity deployments.
       args: null
+      # HostAntiAffinity allows to enforce a certain type of host anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      hostAntiAffinity: ""
       # KeepaliveTime represents a duration of time to check if the transport is still alive.
       # The option is propagated to agents and server.
       # Defaults to 1m.
       keepaliveTime: ""
       # Resources configure limits/requests for Konnectivity components.
       resources: null
+      # ZoneAntiAffinity allows to enforce a certain type of availability zone anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      zoneAntiAffinity: ""
     # KubeStateMetrics configures kube-state-metrics settings deployed by the monitoring controller.
     kubeStateMetrics: null
+    # MachineController configures the Kubermatic machine-controller deployment.
+    machineController: null
     # NodePortProxyEnvoy configures the per-cluster nodeport-proxy-envoy that is deployed if
     # the `LoadBalancer` expose strategy is used. This is not effective if a different expose
     # strategy is configured.
     nodePortProxyEnvoy:
       # DockerRepository is the repository containing the component's image.
       dockerRepository: ""
+      # HostAntiAffinity allows to enforce a certain type of host anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      hostAntiAffinity: ""
       # Resources describes the requested and maximum allowed CPU/memory usage.
       resources:
         # Claims lists the names of resources, defined in spec.resourceClaims,
         # that are used by this container.
 
-        # This is an alpha field and requires enabling the
+        # This field depends on the
         # DynamicResourceAllocation feature gate.
 
         # This field is immutable. It can only be set for containers.
@@ -536,15 +589,34 @@ spec:
         # otherwise to an implementation-defined value. Requests cannot exceed Limits.
         # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
         requests: null
+      # ZoneAntiAffinity allows to enforce a certain type of availability zone anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      zoneAntiAffinity: ""
     # OperatingSystemManager configures operating-system-manager (the component generating node bootstrap scripts for machine-controller).
     operatingSystemManager: null
     # Prometheus configures the Prometheus instance deployed into the cluster control plane.
     prometheus:
+      # HostAntiAffinity allows to enforce a certain type of host anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      hostAntiAffinity: ""
+      # Replicas allows to override the number of desired Pods for the StatefulSet.
       replicas: null
+      # Resources allows to override the resource requirements.
       resources: null
+      # Tolerations allows to override the scheduling tolerations for Pods.
       tolerations: null
+      # ZoneAntiAffinity allows to enforce a certain type of availability zone anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      zoneAntiAffinity: ""
     # Scheduler configures kube-scheduler settings.
     scheduler:
+      # HostAntiAffinity allows to enforce a certain type of host anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      hostAntiAffinity: ""
       leaderElection:
         # LeaseDurationSeconds is the duration in seconds that non-leader candidates
         # will wait to force acquire leadership. This is measured against time of
@@ -556,9 +628,16 @@ spec:
         # RetryPeriodSeconds is the duration in seconds the LeaderElector clients
         # should wait between tries of actions.
         retryPeriodSeconds: null
+      # Replicas allows to override the number of desired Pods for the Deployment.
       replicas: 1
+      # Resources allows to override the resource requirements.
       resources: null
+      # Tolerations allows to override the scheduling tolerations for Pods.
       tolerations: null
+      # ZoneAntiAffinity allows to enforce a certain type of availability zone anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      zoneAntiAffinity: ""
     # UserClusterController configures the KKP usercluster-controller deployed as part of the cluster control plane.
     userClusterController: null
   # DisabledCollectors contains a list of metrics collectors that should be disabled.
@@ -598,6 +677,9 @@ spec:
     # UID of the referent.
     # More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
     uid: ""
+  # Kyverno configures the Kyverno policy engine settings at the seed level.
+  # These settings apply to all user clusters in this seed.
+  kyverno: null
   # Optional: Detailed location of the cluster, like "Hamburg" or "Datacenter 7".
   # For informational purposes in the Kubermatic dashboard only.
   location: ""
@@ -641,6 +723,7 @@ spec:
   nodeportProxy:
     # Annotations are used to further tweak the LoadBalancer integration with the
     # cloud provider where the seed cluster is running.
+
     # Deprecated: Use .envoy.loadBalancerService.annotations instead.
     annotations: {}
     # Disable will prevent the Kubermatic Operator from creating a nodeport-proxy
@@ -649,8 +732,52 @@ spec:
     disable: false
     # Envoy configures the Envoy application itself.
     envoy:
+      # ConnectionSettings configures idle timeout and TCP keepalive settings for
+      # the nodeport-proxy Envoy listeners and upstream clusters.
+      # Zero values keep Envoy defaults (no KKP override).
+      connectionSettings:
+        # DownstreamTCPKeepaliveInterval configures the interval between TCP
+        # keepalive probes on downstream listener sockets.
+        # Set to 0 to leave unset. If set, value must be >= 1s.
+        downstreamTCPKeepaliveInterval: 0s
+        # DownstreamTCPKeepaliveProbes is the number of unanswered TCP keepalive
+        # probes before considering downstream listener sockets dead.
+        # Set to 0 to leave unset.
+        downstreamTCPKeepaliveProbes: 0
+        # DownstreamTCPKeepaliveTime configures the idle time before the first TCP
+        # keepalive probe is sent on downstream listener sockets.
+        # Set to 0 to leave unset. If set, value must be >= 1s.
+        downstreamTCPKeepaliveTime: 0s
+        # SNIListenerIdleTimeout bounds how long inactive :6443 SNI listener
+        # downstream connections are kept open.
+        # Set to 0 to keep Envoy default behavior. If set, value must be >= 1s.
+        sniListenerIdleTimeout: 0s
+        # TunnelingConnectionIdleTimeout bounds how long inactive :8088 tunneling
+        # listener downstream connections are kept open.
+        # Set to 0 to keep Envoy default behavior. If set, value must be >= 1s.
+        tunnelingConnectionIdleTimeout: 0s
+        # TunnelingStreamIdleTimeout bounds how long inactive HTTP/2 CONNECT streams
+        # on the tunneling listener are kept open.
+        # Set to 0 to keep Envoy default behavior. If set, value must be >= 1s.
+        tunnelingStreamIdleTimeout: 0s
+        # UpstreamTCPKeepaliveInterval configures the interval between TCP keepalive
+        # probes on upstream cluster sockets.
+        # Set to 0 to leave unset. If set, value must be >= 1s.
+        upstreamTCPKeepaliveInterval: 0s
+        # UpstreamTCPKeepaliveProbes is the number of unanswered TCP keepalive
+        # probes before considering upstream cluster sockets dead.
+        # Set to 0 to leave unset.
+        upstreamTCPKeepaliveProbes: 0
+        # UpstreamTCPKeepaliveTime configures the idle time before the first TCP
+        # keepalive probe is sent on upstream cluster sockets.
+        # Set to 0 to leave unset. If set, value must be >= 1s.
+        upstreamTCPKeepaliveTime: 0s
       # DockerRepository is the repository containing the component's image.
-      dockerRepository: docker.io/envoyproxy/envoy-distroless
+      dockerRepository: docker.io/envoyproxy/envoy
+      # HostAntiAffinity allows to enforce a certain type of host anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      hostAntiAffinity: ""
       loadBalancerService:
         # Annotations are used to further tweak the LoadBalancer integration with the
         # cloud provider.
@@ -661,12 +788,15 @@ spec:
         # This field will be ignored if the cloud-provider does not support the feature.
         # More info: https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/
         sourceRanges: []
+      # Replicas sets the number of pod replicas for the nodeport-proxy-envoy deployment.
+      # Defaults to 3.
+      replicas: null
       # Resources describes the requested and maximum allowed CPU/memory usage.
       resources:
         # Claims lists the names of resources, defined in spec.resourceClaims,
         # that are used by this container.
 
-        # This is an alpha field and requires enabling the
+        # This field depends on the
         # DynamicResourceAllocation feature gate.
 
         # This field is immutable. It can only be set for containers.
@@ -683,16 +813,24 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+      # ZoneAntiAffinity allows to enforce a certain type of availability zone anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      zoneAntiAffinity: ""
     # EnvoyManager configures the Kubermatic-internal Envoy manager.
     envoyManager:
       # DockerRepository is the repository containing the component's image.
       dockerRepository: quay.io/kubermatic/nodeport-proxy
+      # HostAntiAffinity allows to enforce a certain type of host anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      hostAntiAffinity: ""
       # Resources describes the requested and maximum allowed CPU/memory usage.
       resources:
         # Claims lists the names of resources, defined in spec.resourceClaims,
         # that are used by this container.
 
-        # This is an alpha field and requires enabling the
+        # This field depends on the
         # DynamicResourceAllocation feature gate.
 
         # This field is immutable. It can only be set for containers.
@@ -709,6 +847,10 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+      # ZoneAntiAffinity allows to enforce a certain type of availability zone anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      zoneAntiAffinity: ""
     # IPFamilies configures the IP families to use for the LoadBalancer service.
     ipFamilies: null
     # IPFamilyPolicy configures the IP family policy for the LoadBalancer service.
@@ -718,12 +860,16 @@ spec:
     updater:
       # DockerRepository is the repository containing the component's image.
       dockerRepository: quay.io/kubermatic/nodeport-proxy
+      # HostAntiAffinity allows to enforce a certain type of host anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      hostAntiAffinity: ""
       # Resources describes the requested and maximum allowed CPU/memory usage.
       resources:
         # Claims lists the names of resources, defined in spec.resourceClaims,
         # that are used by this container.
 
-        # This is an alpha field and requires enabling the
+        # This field depends on the
         # DynamicResourceAllocation feature gate.
 
         # This field is immutable. It can only be set for containers.
@@ -740,6 +886,10 @@ spec:
         requests:
           cpu: 50m
           memory: 32Mi
+      # ZoneAntiAffinity allows to enforce a certain type of availability zone anti-affinity on Pods.
+      # Options are "preferred" (default) and "required". Please note that
+      # enforcing anti-affinity via "required" can mean that Pods are never scheduled.
+      zoneAntiAffinity: ""
   # OIDCProviderConfiguration allows to configure OIDC provider at the Seed level.
   oidcProviderConfiguration: null
   # Optional: ProxySettings can be used to configure HTTP proxy settings on the

@@ -39,20 +39,18 @@ const (
 	volumeDataName   = "data"
 )
 
-var (
-	defaultResourceRequirements = map[string]*corev1.ResourceRequirements{
-		name: {
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-				corev1.ResourceCPU:    resource.MustParse("100m"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("1Gi"),
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-			},
+var defaultResourceRequirements = map[string]*corev1.ResourceRequirements{
+	name: {
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+			corev1.ResourceCPU:    resource.MustParse("100m"),
 		},
-	}
-)
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("1Gi"),
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+		},
+	},
+}
 
 // StatefulSetReconciler returns the function to reconcile the Prometheus StatefulSet.
 func StatefulSetReconciler(data *resources.TemplateData) reconciling.NamedStatefulSetReconcilerFactory {
@@ -74,13 +72,11 @@ func StatefulSetReconciler(data *resources.TemplateData) reconciling.NamedStatef
 			}
 
 			set.Spec.Replicas = resources.Int32(1)
-			if data.Cluster().Spec.ComponentsOverride.Prometheus.Replicas != nil {
-				set.Spec.Replicas = data.Cluster().Spec.ComponentsOverride.Prometheus.Replicas
+			override := data.Cluster().Spec.ComponentsOverride.Prometheus
+			if override.Replicas != nil {
+				set.Spec.Replicas = override.Replicas
 			}
-
-			if data.Cluster().Spec.ComponentsOverride.Prometheus.Tolerations != nil {
-				set.Spec.Template.Spec.Tolerations = data.Cluster().Spec.ComponentsOverride.Prometheus.Tolerations
-			}
+			set.Spec.Template.Spec.Tolerations = override.Tolerations
 
 			set.Spec.UpdateStrategy.Type = appsv1.RollingUpdateStatefulSetStrategyType
 
@@ -180,6 +176,14 @@ func StatefulSetReconciler(data *resources.TemplateData) reconciling.NamedStatef
 			err := resources.SetResourceRequirements(set.Spec.Template.Spec.Containers, defaultResourceRequirements, resources.GetOverrides(data.Cluster().Spec.ComponentsOverride), set.Annotations)
 			if err != nil {
 				return nil, fmt.Errorf("failed to set resource requirements: %w", err)
+			}
+
+			if set.Spec.Replicas != nil && *set.Spec.Replicas > 1 {
+				set.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(name, override.HostAntiAffinity)
+				if data.SupportsFailureDomainZoneAntiAffinity() {
+					failureDomainZoneAntiAffinity := resources.FailureDomainZoneAntiAffinity(name, override.ZoneAntiAffinity)
+					set.Spec.Template.Spec.Affinity = resources.MergeAffinities(set.Spec.Template.Spec.Affinity, failureDomainZoneAntiAffinity)
+				}
 			}
 
 			return set, nil

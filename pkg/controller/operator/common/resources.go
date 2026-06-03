@@ -44,6 +44,24 @@ const (
 	// ComponentLabel is the label of the component within the architecture.
 	ComponentLabel = "app.kubernetes.io/component"
 
+	// GatewayAccessLabelKey is the label key used to allow namespaces to attach
+	// HTTPRoutes to the KKP Gateway. Namespaces with this label set to "true"
+	// can route traffic through the Gateway.
+	GatewayAccessLabelKey = "kubermatic.io/gateway-access"
+
+	// GatewayAccessLabelValue is the label value used with GatewayAccessLabelKey.
+	GatewayAccessLabelValue = "true"
+
+	// GatewayHTTPRouteLabelKey marks HTTPRoutes that participate in KKP Gateway
+	// migration readiness checks. It is intended for HTTPRoutes produced by
+	// KKP-shipped charts and the kubermatic-operator; applying it to other
+	// HTTPRoutes makes those routes block BYO Gateway migration cleanup until
+	// the configured external Gateway accepts them.
+	GatewayHTTPRouteLabelKey = "kubermatic.io/gateway-route"
+
+	// GatewayHTTPRouteLabelValue is the label value used with GatewayHTTPRouteLabelKey.
+	GatewayHTTPRouteLabelValue = "true"
+
 	DockercfgSecretName = "dockercfg"
 
 	WebhookServiceName        = "kubermatic-webhook"
@@ -68,7 +86,7 @@ const (
 	// ExternalClusterAdmissionWebhookName is the name of the mutating webhook for ExternalClusters.
 	ExternalClusterAdmissionWebhookName = "kubermatic-externalclusters"
 
-	// ApplicationDefinitionAdmissionWebhookName is the name of the validating webhook for ApplicationDefnition.
+	// ApplicationDefinitionAdmissionWebhookName is the name of the validating webhook for ApplicationDefinition.
 	ApplicationDefinitionAdmissionWebhookName = "kubermatic-application-definitions"
 
 	// GroupProjectBindingAdmissionWebhookName is the name of the validating webhook for GroupProjectBindings.
@@ -88,6 +106,7 @@ const (
 	WebhookServingCertSecretName = "webhook-cert"
 
 	IngressName                           = "kubermatic"
+	GatewayName                           = "kubermatic"
 	MasterControllerManagerDeploymentName = "kubermatic-master-controller-manager"
 	SeedControllerManagerDeploymentName   = "kubermatic-seed-controller-manager"
 	WebhookDeploymentName                 = "kubermatic-webhook"

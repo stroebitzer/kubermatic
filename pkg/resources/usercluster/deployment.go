@@ -39,20 +39,18 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-var (
-	defaultResourceRequirements = map[string]*corev1.ResourceRequirements{
-		resources.UserClusterControllerContainerName: {
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("32Mi"),
-				corev1.ResourceCPU:    resource.MustParse("25m"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("512Mi"),
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-			},
+var defaultResourceRequirements = map[string]*corev1.ResourceRequirements{
+	resources.UserClusterControllerContainerName: {
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("32Mi"),
+			corev1.ResourceCPU:    resource.MustParse("25m"),
 		},
-	}
-)
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+		},
+	},
+}
 
 // userclusterControllerData is the subet of the deploymentData interface
 // that is actually required by the usercluster deployment
@@ -78,6 +76,7 @@ type userclusterControllerData interface {
 	GetGlobalSecretKeySelectorValue(configVar *providerconfig.GlobalSecretKeySelector, key string) (string, error)
 	GetEnvVars() ([]corev1.EnvVar, error)
 	GetClusterBackupStorageLocation() *kubermaticv1.ClusterBackupStorageLocation
+	SupportsFailureDomainZoneAntiAffinity() bool
 }
 
 // DeploymentReconciler returns the function to create and update the user cluster controller deployment
@@ -91,8 +90,16 @@ func DeploymentReconciler(data userclusterControllerData) reconciling.NamedDeplo
 
 			dep.Spec.Replicas = resources.Int32(1)
 
-			if data.Cluster().Spec.ComponentsOverride.UserClusterController != nil && data.Cluster().Spec.ComponentsOverride.UserClusterController.Replicas != nil {
-				dep.Spec.Replicas = data.Cluster().Spec.ComponentsOverride.UserClusterController.Replicas
+			hostAntiAffinity := kubermaticv1.AntiAffinityType(kubermaticv1.AntiAffinityTypePreferred)
+			zoneAntiAffinity := kubermaticv1.AntiAffinityType(kubermaticv1.AntiAffinityTypePreferred)
+			override := data.Cluster().Spec.ComponentsOverride.UserClusterController
+			if override != nil {
+				hostAntiAffinity = override.HostAntiAffinity
+				zoneAntiAffinity = override.ZoneAntiAffinity
+				if override.Replicas != nil {
+					dep.Spec.Replicas = override.Replicas
+				}
+				dep.Spec.Template.Spec.Tolerations = override.Tolerations
 			}
 
 			dep.Spec.Selector = &metav1.LabelSelector{
@@ -270,10 +277,6 @@ func DeploymentReconciler(data userclusterControllerData) reconciling.NamedDeplo
 				args = append(args, "-kyverno-enabled")
 			}
 
-			if data.Cluster().Spec.ComponentsOverride.UserClusterController != nil && data.Cluster().Spec.ComponentsOverride.UserClusterController.Tolerations != nil {
-				dep.Spec.Template.Spec.Tolerations = data.Cluster().Spec.ComponentsOverride.UserClusterController.Tolerations
-			}
-
 			envVars, err := data.GetEnvVars()
 			if err != nil {
 				return nil, err
@@ -338,6 +341,14 @@ func DeploymentReconciler(data userclusterControllerData) reconciling.NamedDeplo
 				return nil, fmt.Errorf("failed to set resource requirements: %w", err)
 			}
 			dep.Spec.Template.Spec.ServiceAccountName = ServiceAccountName
+
+			if dep.Spec.Replicas != nil && *dep.Spec.Replicas > 1 {
+				dep.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(resources.UserClusterControllerDeploymentName, hostAntiAffinity)
+				if data.SupportsFailureDomainZoneAntiAffinity() {
+					failureDomainZoneAntiAffinity := resources.FailureDomainZoneAntiAffinity(resources.UserClusterControllerDeploymentName, zoneAntiAffinity)
+					dep.Spec.Template.Spec.Affinity = resources.MergeAffinities(dep.Spec.Template.Spec.Affinity, failureDomainZoneAntiAffinity)
+				}
+			}
 
 			dep.Spec.Template, err = apiserver.IsRunningWrapper(data, dep.Spec.Template, sets.New(resources.UserClusterControllerContainerName))
 			if err != nil {

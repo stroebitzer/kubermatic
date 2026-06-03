@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+
+# Copyright 2026 The Kubermatic Kubernetes Platform contributors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+### This script sets up a local KKP installation in kind with Gateway API enabled
+### from the start (fresh install) and runs the Gateway API e2e tests.
+
+set -euo pipefail
+
+cd $(dirname $0)/../..
+source hack/lib.sh
+
+TEST_NAME="Pre-warm Go build cache"
+echodate "Attempting to pre-warm Go build cache"
+
+beforeGocache=$(nowms)
+make download-gocache
+pushElapsed gocache_download_duration_milliseconds $beforeGocache
+
+export KIND_CLUSTER_NAME="${SEED_NAME:-kubermatic}"
+export KUBERMATIC_YAML=hack/ci/testdata/kubermatic_gatewayapi.yaml
+
+echodate "Deploying KKP with Envoy Gateway"
+
+source hack/ci/setup-kind-cluster.sh
+
+# gather the logs of all things in the cluster control plane and in the Kubermatic namespace
+protokol --kubeconfig "$KUBECONFIG" --flat --output "$ARTIFACTS/logs/cluster-control-plane" --namespace 'cluster-*' > /dev/null 2>&1 &
+protokol --kubeconfig "$KUBECONFIG" --flat --output "$ARTIFACTS/logs/kubermatic" --namespace kubermatic > /dev/null 2>&1 &
+protokol --kubeconfig "$KUBECONFIG" --flat --output "$ARTIFACTS/logs/envoy-gateway" --namespace envoy-gateway-controller > /dev/null 2>&1 &
+
+KUBERMATIC_VERSION="${KUBERMATIC_VERSION:-$(git rev-parse HEAD)}"
+
+DEX_PASSWORD_HASH='$2y$10$Lurps56wlfD5Rgelz9u4FuYOMdUw8FZaIKyt5xUyPBwHP0Eo.yLhW'
+
+export HELM_VALUES_EXTRA="
+migrateGatewayAPI: true
+dex:
+  ingress:
+    enabled: false
+    hosts: []
+    tls: []
+  config:
+    issuer: https://worker.ci.k8c.io/dex
+    enablePasswordDB: true
+    staticPasswords:
+      - email: kubermatic@example.com
+        hash: \"${DEX_PASSWORD_HASH}\"
+        username: admin
+httpRoute:
+  gatewayName: kubermatic
+  gatewayNamespace: kubermatic
+  domain: worker.ci.k8c.io
+  timeout: 3600s
+# if we deploy envoy proxy as LB, its status won't be happy until an external LB IP is assigned
+# which does not happen in kind without extra tooling/setup. Therefore, we deploy it as NodePort for now...
+# we use fixed NodePorts within kind's exposed range (30000:33000) for deterministic testing.
+# envoy proxy containers listen on ports 10080 (HTTP) and 10443 (HTTPS)
+envoyProxy:
+  service:
+    type: NodePort
+    externalTrafficPolicy: Cluster
+    patch:
+      type: JSONMerge
+      value:
+        spec:
+          type: NodePort
+          ports:
+          - name: http
+            port: 80
+            nodePort: 30080
+            targetPort: 10080
+          - name: https
+            port: 443
+            nodePort: 30443
+            targetPort: 10443
+"
+
+export INSTALLER_FLAGS="--migrate-gateway-api"
+export KUBERMATIC_DOMAIN="worker.ci.k8c.io"
+source hack/ci/setup-kubermatic-in-kind.sh
+
+echodate "Verifying Gateway API resources are deployed..."
+echodate "Checking Gateway resource kubermatic/kubermatic"
+retry 10 kubectl get gateway -n kubermatic kubermatic
+echodate "Checking HTTPRoute resource kubermatic/kubermatic"
+retry 10 kubectl get httproute -n kubermatic kubermatic
+echodate "Checking GatewayClass resource kubermatic-envoy-gateway"
+retry 10 kubectl get gatewayclass kubermatic-envoy-gateway
+
+echodate "Gateway API resources are present."
+echodate "Running Gateway API fresh install tests..."
+
+go_test gateway_api_e2e -count=1 -timeout 1h -tags e2e -v ./pkg/test/e2e/gateway-api \
+  -test.run "TestGatewayAPIFreshInstall"
+
+echodate "Gateway API fresh install tests completed successfully!"
+
+echodate "Creating external Gateway for Gateway API BYO Gateway migration tests..."
+
+go_test gateway_api_byo_gateway_setup_e2e -count=1 -timeout 1h -tags e2e -v ./pkg/test/e2e/gateway-api \
+  -test.run "TestGatewayAPIExternalGatewaySetup"
+
+external_gateway_config="$(mktemp)"
+cp "$KUBERMATIC_CONFIG" "$external_gateway_config"
+yq e '
+  del(.spec.ingress.certificateIssuer) |
+  .spec.ingress.gateway.externalGateway.name = "platform-gateway" |
+  .spec.ingress.gateway.externalGateway.namespace = "byo-gateway-e2e" |
+  del(.spec.ingress.gateway.className) |
+  del(.spec.ingress.gateway.infrastructureAnnotations) |
+  del(.spec.ingress.gateway.tls)
+' -i "$external_gateway_config"
+
+echodate "Re-running kubermatic-installer with external Gateway configured..."
+
+./_build/kubermatic-installer deploy kubermatic-master \
+  --storageclass copy-default \
+  --config "$external_gateway_config" \
+  --helm-values "$HELM_VALUES_FILE" \
+  --skip-seed-validation=kubermatic \
+  --migrate-gateway-api \
+  --verbose
+
+sleep 5
+retry 10 check_all_deployments_ready kubermatic
+
+echodate "Verifying Gateway API BYO Gateway migration..."
+
+go_test gateway_api_byo_gateway_migration_e2e -count=1 -timeout 1h -tags e2e -v ./pkg/test/e2e/gateway-api \
+  -test.run "TestGatewayAPIExternalGatewayMigration"
+
+echodate "Gateway API BYO Gateway migration tests completed successfully!"
+
+echodate "Restoring managed Gateway API mode after BYO Gateway migration test..."
+
+./_build/kubermatic-installer deploy kubermatic-master \
+  --storageclass copy-default \
+  --config "$KUBERMATIC_CONFIG" \
+  --helm-values "$HELM_VALUES_FILE" \
+  --skip-seed-validation=kubermatic \
+  --migrate-gateway-api \
+  --verbose
+
+sleep 5
+retry 10 check_all_deployments_ready kubermatic
+
+go_test gateway_api_restore_e2e -count=1 -timeout 1h -tags e2e -v ./pkg/test/e2e/gateway-api \
+  -test.run "TestGatewayAPIManagedGatewayRestore"
+
+echodate "Managed Gateway API mode restored successfully."
+
+# Reproduce issue #15711: patch KubermaticConfiguration with a missing ConfigMap
+# reference, then redeploy from scratch. The fix ensures Gateway is created
+# before Deployments, so the installer succeeds despite the broken volume ref.
+
+echodate "=============== Starting deployment failure tolerance test phase ==============="
+echodate "Uninstalling kubermatic-operator Helm release..."
+if ! helm uninstall kubermatic-operator -n kubermatic; then
+  echodate "WARNING: failed to uninstall kubermatic-operator Helm release (may already be gone)"
+fi
+
+echodate "Cleaning up operator-managed resources..."
+if ! kubectl delete gateway -n kubermatic --all --ignore-not-found=true; then
+  echodate "ERROR: failed to delete Gateway resources"
+  exit 1
+fi
+if ! kubectl delete httproute -n kubermatic --all --ignore-not-found=true; then
+  echodate "ERROR: failed to delete HTTPRoute resources"
+  exit 1
+fi
+if ! kubectl delete deploy kubermatic-dashboard -n kubermatic --ignore-not-found=true; then
+  echodate "ERROR: failed to delete kubermatic-dashboard Deployment"
+  exit 1
+fi
+
+echodate "Patching KubermaticConfiguration with missing ConfigMap reference..."
+if ! kubectl patch kubermaticconfiguration -n kubermatic e2e --type merge -p '
+spec:
+  ui:
+    extraVolumeMounts:
+      - name: themes
+        mountPath: /dist/light.css
+        subPath: light
+    extraVolumes:
+      - name: themes
+        configMap:
+          name: kubermatic-dashboard-themes
+'; then
+  echodate "ERROR: failed to patch KubermaticConfiguration with missing ConfigMap reference"
+  exit 1
+fi
+
+echodate "Re-deploying KKP with broken dashboard ConfigMap reference..."
+if ! _build/kubermatic-installer --verbose deploy kubermatic-master \
+  --helm-values "$HELM_VALUES_FILE" \
+  --skip-seed-validation=kubermatic \
+  --migrate-gateway-api; then
+  echodate "ERROR: kubermatic-installer failed during re-deploy with broken ConfigMap (this is the core of issue #15711)"
+  exit 1
+fi
+
+echodate "Running Gateway API deployment failure tolerance tests..."
+
+if ! go_test gateway_api_deployment_failure_tolerance_e2e -count=1 -timeout 1h -tags e2e -v ./pkg/test/e2e/gateway-api \
+  -test.run "TestGatewayAPIDeploymentFailureTolerance"; then
+  echodate "ERROR: Gateway API deployment failure tolerance test failed"
+  exit 1
+fi
+
+echodate "Gateway API deployment failure tolerance tests completed successfully!"

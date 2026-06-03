@@ -19,7 +19,6 @@ package scheduler
 import (
 	"fmt"
 
-	kubermaticv1 "k8c.io/kubermatic/sdk/v2/apis/kubermatic/v1"
 	"k8c.io/kubermatic/v2/pkg/kubernetes"
 	"k8c.io/kubermatic/v2/pkg/resources"
 	"k8c.io/kubermatic/v2/pkg/resources/apiserver"
@@ -35,18 +34,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
-var (
-	defaultResourceRequirements = corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{
-			corev1.ResourceMemory: resource.MustParse("64Mi"),
-			corev1.ResourceCPU:    resource.MustParse("20m"),
-		},
-		Limits: corev1.ResourceList{
-			corev1.ResourceMemory: resource.MustParse("512Mi"),
-			corev1.ResourceCPU:    resource.MustParse("1"),
-		},
-	}
-)
+var defaultResourceRequirements = corev1.ResourceRequirements{
+	Requests: corev1.ResourceList{
+		corev1.ResourceMemory: resource.MustParse("64Mi"),
+		corev1.ResourceCPU:    resource.MustParse("20m"),
+	},
+	Limits: corev1.ResourceList{
+		corev1.ResourceMemory: resource.MustParse("512Mi"),
+		corev1.ResourceCPU:    resource.MustParse("1"),
+	},
+}
 
 const (
 	name = "scheduler"
@@ -70,22 +67,27 @@ func DeploymentReconciler(data *resources.TemplateData) reconciling.NamedDeploym
 				// this can't be passed as two strings as the other parameters
 				"--profiling=false",
 			}
+			if data.DRAEnabled() {
+				flags = append(flags, "--feature-gates=DynamicResourceAllocation=true")
+			}
 
 			// Apply leader election settings
-			if lds := data.Cluster().Spec.ComponentsOverride.Scheduler.LeaseDurationSeconds; lds != nil {
+			override := data.Cluster().Spec.ComponentsOverride.Scheduler
+			if lds := override.LeaseDurationSeconds; lds != nil {
 				flags = append(flags, "--leader-elect-lease-duration", fmt.Sprintf("%ds", *lds))
 			}
-			if rds := data.Cluster().Spec.ComponentsOverride.Scheduler.LeaderElectionSettings.DeepCopy().RenewDeadlineSeconds; rds != nil {
+			if rds := override.LeaderElectionSettings.DeepCopy().RenewDeadlineSeconds; rds != nil {
 				flags = append(flags, "--leader-elect-renew-deadline", fmt.Sprintf("%ds", *rds))
 			}
-			if rps := data.Cluster().Spec.ComponentsOverride.Scheduler.LeaderElectionSettings.DeepCopy().RetryPeriodSeconds; rps != nil {
+			if rps := override.LeaderElectionSettings.DeepCopy().RetryPeriodSeconds; rps != nil {
 				flags = append(flags, "--leader-elect-retry-period", fmt.Sprintf("%ds", *rps))
 			}
 
 			dep.Spec.Replicas = resources.Int32(1)
-			if data.Cluster().Spec.ComponentsOverride.Scheduler.Replicas != nil {
-				dep.Spec.Replicas = data.Cluster().Spec.ComponentsOverride.Scheduler.Replicas
+			if override.Replicas != nil {
+				dep.Spec.Replicas = override.Replicas
 			}
+			dep.Spec.Template.Spec.Tolerations = override.Tolerations
 
 			dep.Spec.Selector = &metav1.LabelSelector{
 				MatchLabels: baseLabels,
@@ -170,7 +172,13 @@ func DeploymentReconciler(data *resources.TemplateData) reconciling.NamedDeploym
 				return nil, fmt.Errorf("failed to set resource requirements: %w", err)
 			}
 
-			dep.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(name, kubermaticv1.AntiAffinityTypePreferred)
+			if dep.Spec.Replicas != nil && *dep.Spec.Replicas > 1 {
+				dep.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(name, override.HostAntiAffinity)
+				if data.SupportsFailureDomainZoneAntiAffinity() {
+					failureDomainZoneAntiAffinity := resources.FailureDomainZoneAntiAffinity(name, override.ZoneAntiAffinity)
+					dep.Spec.Template.Spec.Affinity = resources.MergeAffinities(dep.Spec.Template.Spec.Affinity, failureDomainZoneAntiAffinity)
+				}
+			}
 
 			dep.Spec.Template, err = apiserver.IsRunningWrapper(data, dep.Spec.Template, sets.New(name))
 			if err != nil {

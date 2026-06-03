@@ -23,6 +23,7 @@ import (
 	"net"
 	"regexp"
 	"sync"
+	"time"
 
 	kubermaticv1 "k8c.io/kubermatic/sdk/v2/apis/kubermatic/v1"
 	kubermaticv1helper "k8c.io/kubermatic/sdk/v2/apis/kubermatic/v1/helper"
@@ -33,7 +34,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	ctrlruntimeclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -62,26 +62,21 @@ func newSeedValidator(
 
 var resourceNameValidator = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 
-var _ admission.CustomValidator = &validator{}
+var _ admission.Validator[*kubermaticv1.Seed] = &validator{}
 
-func (v *validator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (v *validator) ValidateCreate(ctx context.Context, obj *kubermaticv1.Seed) (admission.Warnings, error) {
 	return nil, v.validate(ctx, obj, false)
 }
 
-func (v *validator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (v *validator) ValidateUpdate(ctx context.Context, oldObj, newObj *kubermaticv1.Seed) (admission.Warnings, error) {
 	return nil, v.validate(ctx, newObj, false)
 }
 
-func (v *validator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (v *validator) ValidateDelete(ctx context.Context, obj *kubermaticv1.Seed) (admission.Warnings, error) {
 	return nil, v.validate(ctx, obj, true)
 }
 
-func (v *validator) validate(ctx context.Context, obj runtime.Object, isDelete bool) error {
-	subject, ok := obj.(*kubermaticv1.Seed)
-	if !ok {
-		return errors.New("given object is not a Seed")
-	}
-
+func (v *validator) validate(ctx context.Context, subject *kubermaticv1.Seed, isDelete bool) error {
 	// We need locking to make the validation concurrency-safe
 	// TODO: this is acceptable as request rate is low, but is it required?
 	v.lock.Lock()
@@ -166,6 +161,12 @@ func (v *validator) validate(ctx context.Context, obj runtime.Object, isDelete b
 			}
 		}
 
+		if dc.Spec.AuthenticationConfiguration != nil {
+			if dc.Spec.AuthenticationConfiguration.SecretName == "" || dc.Spec.AuthenticationConfiguration.SecretKey == "" {
+				return fmt.Errorf("datacenter %q: spec.authenticationConfiguration must contain a valid secret reference with secretName and secretKey", dcName)
+			}
+		}
+
 		if existingSeed == nil {
 			continue
 		}
@@ -189,6 +190,10 @@ func (v *validator) validate(ctx context.Context, obj runtime.Object, isDelete b
 		return err
 	}
 
+	if err := validateNodePortProxyEnvoyConnectionSettings(subject); err != nil {
+		return err
+	}
+
 	if err := validateEtcdBackupConfiguration(ctx, seedClient, subject); err != nil {
 		return err
 	}
@@ -197,6 +202,27 @@ func (v *validator) validate(ctx context.Context, obj runtime.Object, isDelete b
 		return err
 	}
 
+	if err := validateAuthenticationConfiguration(subject); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateAuthenticationConfiguration(seed *kubermaticv1.Seed) error {
+	if seed.Spec.AuthenticationConfiguration != nil && seed.Spec.OIDCProviderConfiguration != nil {
+		return errors.New("only one of spec.authenticationConfiguration and spec.oidcProviderConfiguration can be set")
+	}
+	if secretRef := seed.Spec.AuthenticationConfiguration; secretRef != nil {
+		if secretRef.SecretName == "" || secretRef.SecretKey == "" {
+			return errors.New("spec.authenticationConfiguration must contain a valid secret reference with secretName and secretKey")
+		}
+	}
+	if oidcConfig := seed.Spec.OIDCProviderConfiguration; oidcConfig != nil {
+		if oidcConfig.IssuerURL == "" || oidcConfig.IssuerClientID == "" {
+			return errors.New("spec.oidcProviderConfiguration must specify issuerURL and issuerClientID")
+		}
+	}
 	return nil
 }
 
@@ -208,6 +234,56 @@ func validateDefaultAPIServerAllowedIPRanges(ctx context.Context, seed *kubermat
 			}
 		}
 	}
+	return nil
+}
+
+func validateNodePortProxyEnvoyConnectionSettings(seed *kubermaticv1.Seed) error {
+	settings := seed.Spec.NodeportProxy.Envoy.ConnectionSettings
+
+	durationFields := []struct {
+		field string
+		value time.Duration
+	}{
+		{
+			field: "spec.nodeportProxy.envoy.connectionSettings.sniListenerIdleTimeout",
+			value: settings.SNIListenerIdleTimeout.Duration,
+		},
+		{
+			field: "spec.nodeportProxy.envoy.connectionSettings.tunnelingConnectionIdleTimeout",
+			value: settings.TunnelingConnectionIdleTimeout.Duration,
+		},
+		{
+			field: "spec.nodeportProxy.envoy.connectionSettings.tunnelingStreamIdleTimeout",
+			value: settings.TunnelingStreamIdleTimeout.Duration,
+		},
+		{
+			field: "spec.nodeportProxy.envoy.connectionSettings.downstreamTCPKeepaliveTime",
+			value: settings.DownstreamTCPKeepaliveTime.Duration,
+		},
+		{
+			field: "spec.nodeportProxy.envoy.connectionSettings.downstreamTCPKeepaliveInterval",
+			value: settings.DownstreamTCPKeepaliveInterval.Duration,
+		},
+		{
+			field: "spec.nodeportProxy.envoy.connectionSettings.upstreamTCPKeepaliveTime",
+			value: settings.UpstreamTCPKeepaliveTime.Duration,
+		},
+		{
+			field: "spec.nodeportProxy.envoy.connectionSettings.upstreamTCPKeepaliveInterval",
+			value: settings.UpstreamTCPKeepaliveInterval.Duration,
+		},
+	}
+
+	for _, d := range durationFields {
+		if d.value < 0 {
+			return fmt.Errorf("%s must be >= 0", d.field)
+		}
+
+		if d.value > 0 && d.value < time.Second {
+			return fmt.Errorf("%s must be 0 or >= 1s", d.field)
+		}
+	}
+
 	return nil
 }
 

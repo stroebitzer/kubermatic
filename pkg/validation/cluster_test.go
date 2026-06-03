@@ -74,6 +74,74 @@ func TestValidateClusterSpec(t *testing.T) {
 	}
 }
 
+func TestValidateAuthenticationConfiguration(t *testing.T) {
+	tests := []struct {
+		name string
+		spec *kubermaticv1.ClusterSpec
+		err  string
+	}{
+		{
+			name: "spec with authentication configuration should be valid",
+			spec: &kubermaticv1.ClusterSpec{
+				AuthenticationConfiguration: &kubermaticv1.AuthenticationConfiguration{
+					SecretName: "example-secret",
+					SecretKey:  "example-key",
+				},
+			},
+		},
+		{
+			name: "spec with both authentication configuration and OIDC issuer URL should be invalid",
+			err:  "authenticationConfiguration and oidc.issuerURL are mutually exclusive",
+			spec: &kubermaticv1.ClusterSpec{
+				OIDC: kubermaticv1.OIDCSettings{
+					IssuerURL: "https://example.com",
+					ClientID:  "example-client-id",
+				},
+				AuthenticationConfiguration: &kubermaticv1.AuthenticationConfiguration{
+					SecretName: "example-secret",
+					SecretKey:  "example-key",
+				},
+			},
+		},
+		{
+			name: "spec with empty authentication configuration should be invalid",
+			err:  "secretName and secretKey are required when authenticationConfiguration is specified",
+			spec: &kubermaticv1.ClusterSpec{
+				AuthenticationConfiguration: &kubermaticv1.AuthenticationConfiguration{},
+			},
+		},
+		{
+			name: "spec with authentication configuration without secretKey should be invalid",
+			err:  "secretName and secretKey are required when authenticationConfiguration is specified",
+			spec: &kubermaticv1.ClusterSpec{
+				AuthenticationConfiguration: &kubermaticv1.AuthenticationConfiguration{
+					SecretName: "example-secret",
+				},
+			},
+		},
+		{
+			name: "spec with authentication configuration without secretName should be invalid",
+			err:  "secretName and secretKey are required when authenticationConfiguration is specified",
+			spec: &kubermaticv1.ClusterSpec{
+				AuthenticationConfiguration: &kubermaticv1.AuthenticationConfiguration{
+					SecretKey: "example-key",
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateAuthenticationConfiguration(test.spec, field.NewPath("spec")).ToAggregate()
+			if test.err == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorContains(t, err, test.err)
+			}
+		})
+	}
+}
+
 func TestValidateContainerRuntime(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1399,6 +1467,214 @@ func TestValidateCoreDNSReplicas(t *testing.T) {
 
 			if (err == nil) != test.valid {
 				t.Errorf("Extected err to be %v, got %v", test.valid, err)
+			}
+		})
+	}
+}
+
+func TestValidateEventRateLimitConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    *kubermaticv1.ClusterSpec
+		wantErr bool
+	}{
+		{
+			name: "plugin disabled, no config - valid",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: false,
+			},
+			wantErr: false,
+		},
+		{
+			name: "plugin enabled via flag, no limits configured - invalid",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+			},
+			wantErr: true,
+		},
+		{
+			name: "plugin enabled via flag, empty config - invalid",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig:             &kubermaticv1.EventRateLimitConfig{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "plugin enabled via AdmissionPlugins list, no limits - invalid",
+			spec: &kubermaticv1.ClusterSpec{
+				AdmissionPlugins: []string{"EventRateLimit"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "plugin enabled, valid server config",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Server: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:   100,
+						Burst: 200,
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "plugin enabled, valid namespace config",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Namespace: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:       50,
+						Burst:     100,
+						CacheSize: 1000,
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "plugin enabled, valid config with all limit types",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Server: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:   100,
+						Burst: 200,
+					},
+					Namespace: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:       50,
+						Burst:     100,
+						CacheSize: 1000,
+					},
+					User: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:       10,
+						Burst:     20,
+						CacheSize: 500,
+					},
+					SourceAndObject: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:       5,
+						Burst:     10,
+						CacheSize: 100,
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "QPS zero - invalid",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Server: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:   0,
+						Burst: 100,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "QPS negative - invalid",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Server: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:   -5,
+						Burst: 100,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Burst zero - invalid",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Namespace: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:   100,
+						Burst: 0,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Burst negative - invalid",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Namespace: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:   100,
+						Burst: -10,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "CacheSize negative - invalid",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					User: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:       100,
+						Burst:     200,
+						CacheSize: -1,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "CacheSize zero - valid",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Server: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:       100,
+						Burst:     200,
+						CacheSize: 0,
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "minimum valid values (QPS=1, Burst=1)",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: true,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Server: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:   1,
+						Burst: 1,
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "plugin disabled but config provided with invalid values - still validates config",
+			spec: &kubermaticv1.ClusterSpec{
+				UseEventRateLimitAdmissionPlugin: false,
+				EventRateLimitConfig: &kubermaticv1.EventRateLimitConfig{
+					Server: &kubermaticv1.EventRateLimitConfigItem{
+						QPS:   -1,
+						Burst: -1,
+					},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			errs := ValidateEventRateLimitConfig(test.spec, field.NewPath("spec", "eventRateLimitConfig"))
+			if test.wantErr == (len(errs) == 0) {
+				t.Errorf("Want error: %t, but got: %v", test.wantErr, errs)
 			}
 		})
 	}

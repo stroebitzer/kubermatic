@@ -40,18 +40,16 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-var (
-	defaultResourceRequirements = corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{
-			corev1.ResourceMemory: resource.MustParse("100Mi"),
-			corev1.ResourceCPU:    resource.MustParse("100m"),
-		},
-		Limits: corev1.ResourceList{
-			corev1.ResourceMemory: resource.MustParse("2Gi"),
-			corev1.ResourceCPU:    resource.MustParse("2"),
-		},
-	}
-)
+var defaultResourceRequirements = corev1.ResourceRequirements{
+	Requests: corev1.ResourceList{
+		corev1.ResourceMemory: resource.MustParse("100Mi"),
+		corev1.ResourceCPU:    resource.MustParse("100m"),
+	},
+	Limits: corev1.ResourceList{
+		corev1.ResourceMemory: resource.MustParse("2Gi"),
+		corev1.ResourceCPU:    resource.MustParse("2"),
+	},
+}
 
 const (
 	name = "controller-manager"
@@ -72,9 +70,11 @@ func DeploymentReconciler(data *resources.TemplateData) reconciling.NamedDeploym
 			}
 
 			dep.Spec.Replicas = resources.Int32(1)
-			if data.Cluster().Spec.ComponentsOverride.ControllerManager.Replicas != nil {
-				dep.Spec.Replicas = data.Cluster().Spec.ComponentsOverride.ControllerManager.Replicas
+			override := data.Cluster().Spec.ComponentsOverride.ControllerManager
+			if override.Replicas != nil {
+				dep.Spec.Replicas = override.Replicas
 			}
+			dep.Spec.Template.Spec.Tolerations = override.Tolerations
 
 			dep.Spec.Selector = &metav1.LabelSelector{
 				MatchLabels: baseLabels,
@@ -191,7 +191,13 @@ func DeploymentReconciler(data *resources.TemplateData) reconciling.NamedDeploym
 				return nil, fmt.Errorf("failed to set resource requirements: %w", err)
 			}
 
-			dep.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(name, kubermaticv1.AntiAffinityTypePreferred)
+			if dep.Spec.Replicas != nil && *dep.Spec.Replicas > 1 {
+				dep.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(name, override.HostAntiAffinity)
+				if data.SupportsFailureDomainZoneAntiAffinity() {
+					failureDomainZoneAntiAffinity := resources.FailureDomainZoneAntiAffinity(name, override.ZoneAntiAffinity)
+					dep.Spec.Template.Spec.Affinity = resources.MergeAffinities(dep.Spec.Template.Spec.Affinity, failureDomainZoneAntiAffinity)
+				}
+			}
 
 			dep.Spec.Template, err = apiserver.IsRunningWrapper(data, dep.Spec.Template, sets.New(name))
 			if err != nil {
@@ -254,6 +260,9 @@ func getFlags(data *resources.TemplateData, version *semverlib.Version) ([]strin
 
 	featureGates := []string{"RotateKubeletServerCertificate=true"}
 	featureGates = append(featureGates, data.GetCSIMigrationFeatureGates(cluster.Status.Versions.ControllerManager.Semver())...)
+	if data.DRAEnabled() {
+		featureGates = append(featureGates, "DynamicResourceAllocation=true")
+	}
 
 	flags = append(flags, "--feature-gates")
 	flags = append(flags, strings.Join(featureGates, ","))

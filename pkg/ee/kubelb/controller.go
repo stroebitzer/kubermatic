@@ -26,17 +26,18 @@ package kubelbcontroller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"go.uber.org/zap"
 
-	kubelbv1alpha1 "k8c.io/kubelb/api/kubelb.k8c.io/v1alpha1"
 	kubermaticv1 "k8c.io/kubermatic/sdk/v2/apis/kubermatic/v1"
 	clusterclient "k8c.io/kubermatic/v2/pkg/cluster/client"
 	"k8c.io/kubermatic/v2/pkg/controller/util"
 	predicateutil "k8c.io/kubermatic/v2/pkg/controller/util/predicate"
 	kubelbresources "k8c.io/kubermatic/v2/pkg/ee/kubelb/resources"
+	kubelbclusterresources "k8c.io/kubermatic/v2/pkg/ee/kubelb/resources/kubelb-cluster"
 	kubelbseedresources "k8c.io/kubermatic/v2/pkg/ee/kubelb/resources/seed-cluster"
 	kubelbuserclusterresources "k8c.io/kubermatic/v2/pkg/ee/kubelb/resources/user-cluster"
 	kuberneteshelper "k8c.io/kubermatic/v2/pkg/kubernetes"
@@ -51,9 +52,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrlruntimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -78,26 +81,28 @@ type reconciler struct {
 	ctrlruntimeclient.Client
 
 	workerName                    string
-	recorder                      record.EventRecorder
+	recorder                      events.EventRecorder
 	seedGetter                    provider.SeedGetter
 	projectsGetter                provider.ProjectsGetter
 	userClusterConnectionProvider UserClusterClientProvider
 	log                           *zap.SugaredLogger
 	overwriteRegistry             string
 	versions                      kubermatic.Versions
+	configGetter                  provider.KubermaticConfigurationGetter
 }
 
-func Add(mgr manager.Manager, numWorkers int, workerName string, overwriteRegistry string, seedGetter provider.SeedGetter, projectsGetter provider.ProjectsGetter, userClusterConnectionProvider UserClusterClientProvider, log *zap.SugaredLogger, versions kubermatic.Versions) error {
+func Add(mgr manager.Manager, numWorkers int, workerName string, overwriteRegistry string, seedGetter provider.SeedGetter, projectsGetter provider.ProjectsGetter, userClusterConnectionProvider UserClusterClientProvider, log *zap.SugaredLogger, versions kubermatic.Versions, configGetter provider.KubermaticConfigurationGetter) error {
 	reconciler := &reconciler{
 		Client:                        mgr.GetClient(),
 		workerName:                    workerName,
-		recorder:                      mgr.GetEventRecorderFor(ControllerName),
+		recorder:                      mgr.GetEventRecorder(ControllerName),
 		seedGetter:                    seedGetter,
 		projectsGetter:                projectsGetter,
 		userClusterConnectionProvider: userClusterConnectionProvider,
 		log:                           log,
 		versions:                      versions,
 		overwriteRegistry:             overwriteRegistry,
+		configGetter:                  configGetter,
 	}
 
 	clusterIsAlive := predicateutil.Factory(func(o ctrlruntimeclient.Object) bool {
@@ -178,7 +183,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 
 	if err != nil {
-		r.recorder.Event(cluster, corev1.EventTypeWarning, "ReconcilingError", err.Error())
+		r.recorder.Eventf(cluster, nil, corev1.EventTypeWarning, "ReconcilingError", "Reconciling", err.Error())
 	}
 
 	return *result, err
@@ -243,24 +248,27 @@ func (r *reconciler) reconcile(ctx context.Context, cluster *kubermaticv1.Cluste
 	return r.createOrUpdateKubeLBSeedClusterResources(ctx, cluster, kubeLBManagementClient, kubeLBManagementKubeConfig, datacenter)
 }
 
-func (r *reconciler) createOrUpdateKubeLBManagementClusterResources(ctx context.Context, client ctrlruntimeclient.Client, cluster *kubermaticv1.Cluster, defaultTenantSpec *kubelbv1alpha1.TenantSpec) error {
-	// Check if tenant exists or not, if it doesn't we create it.
-	tenant := &kubelbv1alpha1.Tenant{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: cluster.Name,
-			Labels: map[string]string{
-				// These labels are used to identify the tenant in the kubelb management cluster.
-				"kubermatic.k8c.io/cluster-name":          cluster.Name,
-				"kubermatic.k8c.io/cluster-external-name": cluster.Status.Address.ExternalName,
-				"kubermatic.k8c.io/cluster-project-id":    cluster.Labels[kubermaticv1.ProjectIDLabelKey],
-			},
-		},
+func (r *reconciler) createOrUpdateKubeLBManagementClusterResources(ctx context.Context, client ctrlruntimeclient.Client, cluster *kubermaticv1.Cluster, defaultTenantSpec *runtime.RawExtension) error {
+	tenant := &unstructured.Unstructured{}
+	tenant.SetGroupVersionKind(kubelbclusterresources.KubelbTenantGVK)
+	tenant.SetName(cluster.Name)
+	tenant.SetLabels(map[string]string{
+		"kubermatic.k8c.io/cluster-name":          cluster.Name,
+		"kubermatic.k8c.io/cluster-external-name": cluster.Status.Address.ExternalName,
+		"kubermatic.k8c.io/cluster-project-id":    cluster.Labels[kubermaticv1.ProjectIDLabelKey],
+	})
+
+	if defaultTenantSpec != nil && len(defaultTenantSpec.Raw) > 0 {
+		spec := map[string]any{}
+		if err := json.Unmarshal(defaultTenantSpec.Raw, &spec); err != nil {
+			return fmt.Errorf("failed to decode project default tenant spec: %w", err)
+		}
+		tenant.Object["spec"] = spec
 	}
-	// Default tenant configuration from the related project should be used if specified
-	if defaultTenantSpec != nil {
-		tenant.Spec = *defaultTenantSpec
-	}
-	if err := client.Get(ctx, ctrlruntimeclient.ObjectKeyFromObject(tenant), tenant); err != nil {
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(kubelbclusterresources.KubelbTenantGVK)
+	if err := client.Get(ctx, ctrlruntimeclient.ObjectKeyFromObject(tenant), existing); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("failed to get tenant: %w", err)
 		}
@@ -359,13 +367,18 @@ func (r *reconciler) createOrUpdateKubeLBSeedClusterResources(ctx context.Contex
 		return nil, fmt.Errorf("failed to reconcile service account: %w", err)
 	}
 
+	cfg, err := r.configGetter(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get KubermaticConfiguration: %w", err)
+	}
+
 	// Create/update kubeLB deployment.
 	modifiers := []reconciling.ObjectModifier{
 		modifier.RelatedRevisionsLabels(ctx, r),
 		modifier.ControlplaneComponent(cluster),
 	}
 	deploymentReconcilers := []reconciling.NamedDeploymentReconcilerFactory{
-		kubelbseedresources.DeploymentReconciler(kubelbseedresources.NewKubeLBData(ctx, cluster, r, r.overwriteRegistry, dc)),
+		kubelbseedresources.DeploymentReconciler(kubelbseedresources.NewKubeLBData(ctx, cluster, r, r.overwriteRegistry, dc, cfg.Spec.UserCluster.KubeLB)),
 	}
 	if err := reconciling.ReconcileDeployments(ctx, deploymentReconcilers, seedNamespace, r.Client, modifiers...); err != nil {
 		return nil, fmt.Errorf("failed to reconcile the Deployments: %w", err)

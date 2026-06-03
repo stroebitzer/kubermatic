@@ -42,7 +42,7 @@ const (
 	imageName          = "kubermatic/nodeport-proxy"
 	envoyAppLabelValue = resources.NodePortProxyEnvoyDeploymentName
 
-	EnvoyVersion = "v1.26.1"
+	EnvoyVersion = "distroless-v1.37.0"
 
 	// NodePortProxyExposeNamespacedAnnotationKey is the annotation key used to indicate that
 	// a service should be exposed by the namespaced NodeportProxy instance.
@@ -171,7 +171,12 @@ func RoleReconciler() (string, reconciling.RoleReconciler) {
 		r.Rules = []rbacv1.PolicyRule{
 			{
 				APIGroups: []string{""},
-				Resources: []string{"endpoints", "services"},
+				Resources: []string{"services"},
+				Verbs:     []string{"list", "get", "watch"},
+			},
+			{
+				APIGroups: []string{"discovery.k8s.io"},
+				Resources: []string{"endpointslices"},
 				Verbs:     []string{"list", "get", "watch"},
 			},
 			{
@@ -321,9 +326,10 @@ func DeploymentEnvoyReconciler(data nodePortProxyData, versions kubermatic.Versi
 				return nil, fmt.Errorf("failed to set resource requirements: %w", err)
 			}
 
-			d.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(envoyAppLabelValue, kubermaticv1.AntiAffinityTypePreferred)
+			override := data.Cluster().Spec.ComponentsOverride.NodePortProxyEnvoy
+			d.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(envoyAppLabelValue, override.HostAntiAffinity)
 			if data.SupportsFailureDomainZoneAntiAffinity() {
-				failureDomainZoneAntiAffinity := resources.FailureDomainZoneAntiAffinity(envoyAppLabelValue, kubermaticv1.AntiAffinityTypePreferred)
+				failureDomainZoneAntiAffinity := resources.FailureDomainZoneAntiAffinity(envoyAppLabelValue, override.ZoneAntiAffinity)
 				d.Spec.Template.Spec.Affinity = resources.MergeAffinities(d.Spec.Template.Spec.Affinity, failureDomainZoneAntiAffinity)
 			}
 

@@ -70,16 +70,13 @@ var (
 
 	kubernetesVersions = []*version.Version{
 		{
-			Version: semverlib.MustParse("1.30.0"),
-		},
-		{
-			Version: semverlib.MustParse("1.31.0"),
-		},
-		{
-			Version: semverlib.MustParse("1.32.0"),
-		},
-		{
 			Version: semverlib.MustParse("1.33.0"),
+		},
+		{
+			Version: semverlib.MustParse("1.34.0"),
+		},
+		{
+			Version: semverlib.MustParse("1.35.0"),
 		},
 	}
 
@@ -269,7 +266,7 @@ func checkTestResult(t *testing.T, resFile string, testObj interface{}) {
 	res = append([]byte("# This file has been generated, DO NOT EDIT.\n\n"), res...)
 
 	if *update {
-		if err := os.WriteFile(path, res, 0644); err != nil {
+		if err := os.WriteFile(path, res, 0o644); err != nil {
 			t.Fatalf("failed to update fixtures: %v", err)
 		}
 	}
@@ -400,7 +397,7 @@ func TestLoadFiles(t *testing.T) {
 		if err := os.RemoveAll(fixtureDir); err != nil {
 			t.Fatalf("Failed to remove all old fixtures: %v", err)
 		}
-		if err := os.MkdirAll(fixtureDir, 0755); err != nil {
+		if err := os.MkdirAll(fixtureDir, 0o755); err != nil {
 			t.Fatalf("Failed to create fixture directory: %v", err)
 		}
 	}
@@ -482,6 +479,13 @@ func TestLoadFiles(t *testing.T) {
 								ObjectMeta: metav1.ObjectMeta{
 									ResourceVersion: "123456",
 									Name:            resources.ApiserverTLSSecretName,
+									Namespace:       cluster.Status.NamespaceName,
+								},
+							},
+							&corev1.Secret{
+								ObjectMeta: metav1.ObjectMeta{
+									ResourceVersion: "123456",
+									Name:            resources.ApiserverAuthenticationConfigurationSecretName,
 									Namespace:       cluster.Status.NamespaceName,
 								},
 							},
@@ -876,6 +880,7 @@ func TestLoadFiles(t *testing.T) {
 						WithCABundle(caBundle).
 						WithOIDCIssuerURL("https://dev.kubermatic.io/dex").
 						WithOIDCIssuerClientID("kubermaticIssuer").
+						WithOIDCAuthenticationFeatureEnabled(true).
 						WithKubermaticImage("quay.io/kubermatic/kubermatic").
 						WithEtcdLauncherImage("quay.io/kubermatic/etcd-launcher").
 						WithDnatControllerImage("quay.io/kubermatic/kubeletdnat-controller").
@@ -904,7 +909,9 @@ func generateAndVerifyResources(t *testing.T, ctx context.Context, client ctrlru
 	controlPlaneModifier := modifier.ControlplaneComponent(cluster)
 
 	var deploymentReconcilers []reconciling.NamedDeploymentReconcilerFactory
-	deploymentReconcilers = append(deploymentReconcilers, kubernetescontroller.GetDeploymentReconcilers(data, true, versions)...)
+	deploymentReconcilers = append(deploymentReconcilers,
+		kubernetescontroller.GetDeploymentReconcilers(data, versions)...,
+	)
 	deploymentReconcilers = append(deploymentReconcilers, monitoringcontroller.GetDeploymentReconcilers(data)...)
 	for _, factory := range deploymentReconcilers {
 		name, reconciler := factory()
@@ -984,13 +991,6 @@ func generateAndVerifyResources(t *testing.T, ctx context.Context, client ctrlru
 		res.Name = name
 		res.Namespace = cluster.Status.NamespaceName
 
-		fixturePath := tc.fixturePath("statefulset", res.Name)
-		if err != nil {
-			t.Fatalf("failed to create StatefulSet for %s: %v", fixturePath, err)
-		}
-
-		fixtureDone(fixturePath)
-
 		// Verify that every StatefulSet has the ImagePullSecret set
 		if len(res.Spec.Template.Spec.ImagePullSecrets) == 0 {
 			t.Errorf("StatefulSet %s is missing the ImagePullSecret on the PodTemplate", res.Name)
@@ -998,6 +998,8 @@ func generateAndVerifyResources(t *testing.T, ctx context.Context, client ctrlru
 
 		verifyContainerResources(fmt.Sprintf("StatefulSet/%s", res.Name), res.Spec.Template, t)
 
+		fixturePath := tc.fixturePath("statefulset", res.Name)
+		fixtureDone(fixturePath)
 		checkTestResult(t, fixturePath, res)
 	}
 
@@ -1011,10 +1013,6 @@ func generateAndVerifyResources(t *testing.T, ctx context.Context, client ctrlru
 		res.Namespace = cluster.Status.NamespaceName
 
 		fixturePath := tc.fixturePath("poddisruptionbudget", name)
-		if err != nil {
-			t.Fatalf("failed to create PodDisruptionBudget for %s: %v", fixturePath, err)
-		}
-
 		fixtureDone(fixturePath)
 		checkTestResult(t, fixturePath, res)
 	}
@@ -1028,16 +1026,12 @@ func generateAndVerifyResources(t *testing.T, ctx context.Context, client ctrlru
 		res.Name = name
 		res.Namespace = cluster.Status.NamespaceName
 
-		fixturePath := tc.fixturePath("cronjob", res.Name)
-		if err != nil {
-			t.Fatalf("failed to create CronJob for %s: %v", fixturePath, err)
-		}
-
 		// Verify that every CronJob has the ImagePullSecret set
 		if len(res.Spec.JobTemplate.Spec.Template.Spec.ImagePullSecrets) == 0 {
 			t.Errorf("CronJob %s is missing the ImagePullSecret on the PodTemplate", res.Name)
 		}
 
+		fixturePath := tc.fixturePath("cronjob", res.Name)
 		fixtureDone(fixturePath)
 		checkTestResult(t, fixturePath, res)
 	}
@@ -1052,10 +1046,6 @@ func generateAndVerifyResources(t *testing.T, ctx context.Context, client ctrlru
 		res.Namespace = cluster.Status.NamespaceName
 
 		fixturePath := tc.fixturePath("etcdbackupconfig", res.Name)
-		if err != nil {
-			t.Fatalf("failed to create EtcdBackupConfig for %s: %v", fixturePath, err)
-		}
-
 		fixtureDone(fixturePath)
 		checkTestResult(t, fixturePath, res)
 	}

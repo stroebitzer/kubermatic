@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.16.5
+    controller-gen.kubebuilder.io/version: v0.20.1
     kubermatic.k8c.io/location: master,seed
   name: projects.kubermatic.k8c.io
 spec:
@@ -59,57 +59,14 @@ spec:
                   description: AllowedOperatingSystems defines a map of operating systems that can be used for the machines inside this project.
                   type: object
                 defaultTenantSpec:
-                  description: DefaultTenantSpec
-                  properties:
-                    gatewayAPI:
-                      description: GatewayAPISettings defines the settings for the gateway API.
-                      properties:
-                        class:
-                          description: |-
-                            Class is the class of the gateway API to use. This can be used to specify a specific gateway API implementation.
-                            This has higher precedence than the value specified in the Config.
-                          type: string
-                        disable:
-                          description: Disable is a flag that can be used to disable Gateway API for a tenant.
-                          type: boolean
-                      type: object
-                    ingress:
-                      description: IngressSettings defines the settings for the ingress.
-                      properties:
-                        class:
-                          description: |-
-                            Class is the class of the ingress to use.
-                            This has higher precedence than the value specified in the Config.
-                          type: string
-                        disable:
-                          description: Disable is a flag that can be used to disable Ingress for a tenant.
-                          type: boolean
-                      type: object
-                    loadBalancer:
-                      description: LoadBalancerSettings defines the settings for the load balancers.
-                      properties:
-                        class:
-                          description: |-
-                            Class is the class of the load balancer to use.
-                            This has higher precedence than the value specified in the Config.
-                          type: string
-                        disable:
-                          description: Disable is a flag that can be used to disable L4 load balancing for a tenant.
-                          type: boolean
-                      type: object
-                    propagateAllAnnotations:
-                      description: |-
-                        PropagateAllAnnotations defines whether all annotations will be propagated to the LoadBalancer service. If set to true, PropagatedAnnotations will be ignored.
-                        This will have a higher precedence than the value specified at the Config level.
-                      type: boolean
-                    propagatedAnnotations:
-                      additionalProperties:
-                        type: string
-                      description: |-
-                        PropagatedAnnotations defines the list of annotations(key-value pairs) that will be propagated to the LoadBalancer service. Keep the `value` field empty in the key-value pair to allow any value.
-                        This will have a higher precedence than the annotations specified at the Config level.
-                      type: object
-                  type: object
+                  description: |-
+                    DefaultTenantSpec is an opaque KubeLB Tenant Spec passed through to the
+                    kubelb management cluster as-is. This can be used to override the default
+                    Tenant Spec that is used for all Tenants created for this project. This is useful for
+                    users who want to use custom features of KubeLB that are not exposed by the default Tenant Spec.
+                    The default Tenant Spec is defined in the KubeLB documentation and can be found
+                    here: https://docs.kubermatic.com/kubelb/latest/references/ee/#tenantspec.
+                  x-kubernetes-preserve-unknown-fields: true
                 name:
                   description: Name is the human-readable name given to the project.
                   type: string

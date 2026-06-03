@@ -1,0 +1,619 @@
+/*
+Copyright 2026 The Kubermatic Kubernetes Platform contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package httproutegatewaysync
+
+import (
+	"context"
+	"reflect"
+	"strings"
+	"testing"
+
+	"go.uber.org/zap"
+
+	kubermaticv1 "k8c.io/kubermatic/sdk/v2/apis/kubermatic/v1"
+	gatewayutil "k8c.io/kubermatic/v2/pkg/controller/util/gateway"
+	"k8c.io/kubermatic/v2/pkg/defaulting"
+	"k8c.io/kubermatic/v2/pkg/test/fake"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
+	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+)
+
+func TestSanitizeListenerName(t *testing.T) {
+	tests := []struct {
+		name            string
+		hostname        string
+		want            string
+		wantLen         int // expected length (0 means use len(want))
+		checkHashSuffix bool
+	}{
+		{
+			name:     "simple hostname",
+			hostname: "grafana.example.com",
+			want:     "grafana-example-com",
+		},
+		{
+			name:     "wildcard hostname",
+			hostname: "*.example.com",
+			want:     "w-example-com",
+		},
+		{
+			name:     "uppercase converted to lowercase",
+			hostname: "Grafana.Example.COM",
+			want:     "grafana-example-com",
+		},
+		{
+			name:     "exactly 63 chars without hash",
+			hostname: strings.Repeat("a", 63) + ".example.com",
+			wantLen:  63,
+		},
+		{
+			name:            "long hostname requiring truncation with hash",
+			hostname:        "this-is-a-very-long-hostname-that-exceeds-the-sixty-three-character-limit.example.com",
+			checkHashSuffix: true,
+			wantLen:         maxListenerNameLength,
+		},
+		{
+			name:            "long hostname with same prefix gets different hash",
+			hostname:        "this-is-a-very-long-hostname-that-exceeds-the-sixty-three-character-other.example.com",
+			checkHashSuffix: true,
+			wantLen:         maxListenerNameLength,
+		},
+		{
+			name:     "trailing dash in segment preserved",
+			hostname: "test-.example.com",
+			want:     "test--example-com",
+		},
+		{
+			name:            "wildcard long hostname",
+			hostname:        "*.this-is-a-very-long-hostname-that-exceeds-the-sixty-three-character-limit.example.com",
+			checkHashSuffix: true,
+			// Length may be less than maxListenerNameLength due to trailing dash trimming
+		},
+		{
+			name:     "empty hostname",
+			hostname: "",
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeListenerName(tt.hostname)
+
+			// verify length constraint
+			if len(got) > maxListenerNameLength {
+				t.Errorf("sanitizeListenerName() result too long: %d chars (max %d)", len(got), maxListenerNameLength)
+			}
+
+			// verify no trailing dash
+			if strings.HasSuffix(got, "-") {
+				t.Errorf("sanitizeListenerName() has trailing dash: %q", got)
+			}
+
+			// verify no leading dash (invalid DNS label)
+			if len(got) > 0 && strings.HasPrefix(got, "-") {
+				t.Errorf("sanitizeListenerName() has leading dash: %q", got)
+			}
+
+			// check expected length if specified
+			if tt.wantLen > 0 && len(got) != tt.wantLen {
+				t.Errorf("sanitizeListenerName() length = %d, want %d", len(got), tt.wantLen)
+			}
+
+			// for exact matches (non-hash cases)
+			if tt.want != "" && !tt.checkHashSuffix {
+				if got != tt.want {
+					t.Errorf("sanitizeListenerName() = %q, want %q", got, tt.want)
+				}
+			}
+
+			// verify hash suffix format for long names
+			if tt.checkHashSuffix {
+				parts := strings.Split(got, "-")
+				if len(parts) < 2 {
+					t.Errorf("expected hash suffix in %q", got)
+				}
+				lastPart := parts[len(parts)-1]
+				if len(lastPart) != listenerNameHashLen {
+					t.Errorf("hash suffix length = %d, want %d", len(lastPart), listenerNameHashLen)
+				}
+			}
+		})
+	}
+}
+
+func TestSanitizeListenerNameUniqueness(t *testing.T) {
+	// two long hostnames with same 54-char prefix should produce different results
+	host1 := "this-is-a-very-long-hostname-that-exceeds-the-sixty-three-character-first.example.com"
+	host2 := "this-is-a-very-long-hostname-that-exceeds-the-sixty-three-character-second.example.com"
+
+	name1 := sanitizeListenerName(host1)
+	name2 := sanitizeListenerName(host2)
+
+	if name1 == name2 {
+		t.Errorf("expected different names for different hostnames, got same: %s", name1)
+	}
+
+	// verify both are within length limit
+	if len(name1) > 63 || len(name2) > 63 {
+		t.Errorf("names exceed 63 chars: name1=%d, name2=%d", len(name1), len(name2))
+	}
+}
+
+func TestReferencesGateway(t *testing.T) {
+	kindGateway := gatewayapiv1.Kind("Gateway")
+
+	tests := []struct {
+		name      string
+		route     gatewayapiv1.HTTPRoute
+		gatewayNS string
+		want      bool
+	}{
+		{
+			name: "references gateway in same namespace",
+			route: gatewayapiv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "kubermatic"},
+				Spec: gatewayapiv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayapiv1.CommonRouteSpec{
+						ParentRefs: []gatewayapiv1.ParentReference{
+							{Name: "kubermatic", Kind: &kindGateway},
+						},
+					},
+				},
+			},
+			gatewayNS: "kubermatic",
+			want:      true,
+		},
+		{
+			name: "references gateway via explicit namespace",
+			route: gatewayapiv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "monitoring"},
+				Spec: gatewayapiv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayapiv1.CommonRouteSpec{
+						ParentRefs: []gatewayapiv1.ParentReference{
+							{
+								Name:      "kubermatic",
+								Kind:      &kindGateway,
+								Namespace: (*gatewayapiv1.Namespace)(ptr.To("kubermatic")),
+							},
+						},
+					},
+				},
+			},
+			gatewayNS: "kubermatic",
+			want:      true,
+		},
+		{
+			name: "different gateway name",
+			route: gatewayapiv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "kubermatic"},
+				Spec: gatewayapiv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayapiv1.CommonRouteSpec{
+						ParentRefs: []gatewayapiv1.ParentReference{
+							{Name: "other-gateway", Kind: &kindGateway},
+						},
+					},
+				},
+			},
+			gatewayNS: "kubermatic",
+			want:      false,
+		},
+		{
+			name: "different namespace",
+			route: gatewayapiv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "other"},
+				Spec: gatewayapiv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayapiv1.CommonRouteSpec{
+						ParentRefs: []gatewayapiv1.ParentReference{
+							{Name: "kubermatic", Kind: &kindGateway},
+						},
+					},
+				},
+			},
+			gatewayNS: "kubermatic",
+			want:      false,
+		},
+		{
+			name: "no parent refs",
+			route: gatewayapiv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "kubermatic"},
+				Spec:       gatewayapiv1.HTTPRouteSpec{},
+			},
+			gatewayNS: "kubermatic",
+			want:      false,
+		},
+		{
+			name: "kind not gateway",
+			route: gatewayapiv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "kubermatic"},
+				Spec: gatewayapiv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayapiv1.CommonRouteSpec{
+						ParentRefs: []gatewayapiv1.ParentReference{
+							{Name: "kubermatic", Kind: ptr.To(gatewayapiv1.Kind("NotGateway"))},
+						},
+					},
+				},
+			},
+			gatewayNS: "kubermatic",
+			want:      false,
+		},
+		{
+			name: "nil kind defaults to gateway",
+			route: gatewayapiv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "kubermatic"},
+				Spec: gatewayapiv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayapiv1.CommonRouteSpec{
+						ParentRefs: []gatewayapiv1.ParentReference{
+							{Name: "kubermatic"}, // Kind is nil
+						},
+					},
+				},
+			},
+			gatewayNS: "kubermatic",
+			want:      true,
+		},
+	}
+
+	r := &Reconciler{}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gtw := &gatewayapiv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubermatic",
+					Namespace: tt.gatewayNS,
+				},
+			}
+			got := r.referencesGateway(tt.route, gtw)
+			if got != tt.want {
+				t.Errorf("referencesGateway() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagesGatewayRequiresKubermaticConfigurationOwner(t *testing.T) {
+	controller := true
+
+	testCases := []struct {
+		name    string
+		gateway gatewayapiv1.Gateway
+		want    bool
+	}{
+		{
+			name: "operator-managed default Gateway",
+			gateway: gatewayapiv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      defaulting.DefaultGatewayName,
+					Namespace: "kubermatic",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: kubermaticv1.SchemeGroupVersion.String(),
+							Kind:       "KubermaticConfiguration",
+							Name:       "kubermatic",
+							Controller: &controller,
+						},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "external Gateway with default name is not managed without owner reference",
+			gateway: gatewayapiv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      defaulting.DefaultGatewayName,
+					Namespace: "kubermatic",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "external Gateway with matching owner kind but no controller is not managed",
+			gateway: gatewayapiv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      defaulting.DefaultGatewayName,
+					Namespace: "kubermatic",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: kubermaticv1.SchemeGroupVersion.String(),
+							Kind:       "KubermaticConfiguration",
+							Name:       "kubermatic",
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "other Gateway name is not managed even with owner reference",
+			gateway: gatewayapiv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "other",
+					Namespace: "kubermatic",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: kubermaticv1.SchemeGroupVersion.String(),
+							Kind:       "KubermaticConfiguration",
+							Name:       "kubermatic",
+							Controller: &controller,
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "continues scanning after non-controller KubermaticConfiguration owner",
+			gateway: gatewayapiv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      defaulting.DefaultGatewayName,
+					Namespace: "kubermatic",
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: kubermaticv1.SchemeGroupVersion.String(),
+							Kind:       "KubermaticConfiguration",
+							Name:       "non-controller",
+						},
+						{
+							APIVersion: kubermaticv1.SchemeGroupVersion.String(),
+							Kind:       "KubermaticConfiguration",
+							Name:       "kubermatic",
+							Controller: &controller,
+						},
+					},
+				},
+			},
+			want: true,
+		},
+	}
+
+	r := &Reconciler{namespace: "kubermatic"}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := r.managesGateway(&tc.gateway); got != tc.want {
+				t.Errorf("managesGateway() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDesiredListenersReuseGatewayTLSCertificateRefs(t *testing.T) {
+	r := &Reconciler{}
+
+	sharedNamespace := gatewayapiv1.Namespace("shared-certs")
+	gateway := &gatewayapiv1.Gateway{
+		Spec: gatewayapiv1.GatewaySpec{
+			Listeners: []gatewayapiv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayapiv1.HTTPProtocolType,
+					Port:     80,
+				},
+				{
+					Name:     "https",
+					Protocol: gatewayapiv1.HTTPSProtocolType,
+					Port:     443,
+					TLS: &gatewayapiv1.ListenerTLSConfig{
+						Mode: ptr.To(gatewayapiv1.TLSModeTerminate),
+						CertificateRefs: []gatewayapiv1.SecretObjectReference{
+							{
+								Name:      "manual-wildcard",
+								Namespace: &sharedNamespace,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	routes := []gatewayapiv1.HTTPRoute{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "grafana",
+				Namespace: "monitoring",
+			},
+			Spec: gatewayapiv1.HTTPRouteSpec{
+				Hostnames: []gatewayapiv1.Hostname{"grafana.example.com"},
+			},
+		},
+	}
+
+	listeners := r.desiredListeners(zap.NewNop().Sugar(), gateway, routes, r.listenerSyncConfig(gateway))
+
+	var routeListener *gatewayapiv1.Listener
+	for i := range listeners {
+		if listeners[i].Name == gatewayapiv1.SectionName("grafana-example-com") {
+			routeListener = &listeners[i]
+			break
+		}
+	}
+
+	if routeListener == nil {
+		t.Fatalf("expected hostname listener for grafana.example.com, got %#v", listeners)
+	}
+
+	coreHTTPS := gatewayutil.CoreListener(gateway.Spec.Listeners, gatewayutil.CoreListenerHTTPS)
+	if coreHTTPS == nil {
+		t.Fatal("expected core https listener to be present")
+	}
+
+	if !reflect.DeepEqual(routeListener.TLS.CertificateRefs, coreHTTPS.TLS.CertificateRefs) {
+		t.Fatalf("expected synced listener to reuse manual certificate refs, got %#v", routeListener.TLS.CertificateRefs)
+	}
+}
+
+func TestDesiredListenersDisabledPreservesExistingListeners(t *testing.T) {
+	r := &Reconciler{}
+
+	gateway := &gatewayapiv1.Gateway{
+		Spec: gatewayapiv1.GatewaySpec{
+			Listeners: []gatewayapiv1.Listener{
+				{
+					Name:     "http",
+					Protocol: gatewayapiv1.HTTPProtocolType,
+					Port:     80,
+				},
+				{
+					Name:     "custom-tcp",
+					Protocol: gatewayapiv1.TLSProtocolType,
+					Port:     8443,
+				},
+			},
+		},
+	}
+
+	listeners := r.desiredListeners(zap.NewNop().Sugar(), gateway, nil, r.listenerSyncConfig(gateway))
+
+	if !reflect.DeepEqual(listeners, gateway.Spec.Listeners) {
+		t.Fatalf("expected all existing listeners to be preserved when TLS sync is disabled, got %#v", listeners)
+	}
+}
+
+func TestReconcileManualTLSRemovesStaleListeners(t *testing.T) {
+	ctx := context.Background()
+	namespace := "kubermatic"
+	sharedNamespace := gatewayapiv1.Namespace("shared-certs")
+
+	gateway := &gatewayapiv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      defaulting.DefaultGatewayName,
+			Namespace: namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: kubermaticv1.SchemeGroupVersion.String(),
+					Kind:       "KubermaticConfiguration",
+					Name:       "kubermatic",
+					Controller: ptr.To(true),
+				},
+			},
+		},
+		Spec: gatewayapiv1.GatewaySpec{
+			Listeners: []gatewayapiv1.Listener{
+				{
+					Name:     "alertmanager-example-com",
+					Hostname: ptr.To(gatewayapiv1.Hostname("alertmanager.example.com")),
+					Protocol: gatewayapiv1.HTTPSProtocolType,
+					Port:     443,
+					TLS: &gatewayapiv1.ListenerTLSConfig{
+						Mode: ptr.To(gatewayapiv1.TLSModeTerminate),
+						CertificateRefs: []gatewayapiv1.SecretObjectReference{
+							{Name: "monitoring-alertmanager"},
+						},
+					},
+				},
+				{
+					Name:     "http",
+					Protocol: gatewayapiv1.HTTPProtocolType,
+					Port:     80,
+				},
+				{
+					Name:     "https",
+					Hostname: ptr.To(gatewayapiv1.Hostname("example.com")),
+					Protocol: gatewayapiv1.HTTPSProtocolType,
+					Port:     443,
+					TLS: &gatewayapiv1.ListenerTLSConfig{
+						Mode: ptr.To(gatewayapiv1.TLSModeTerminate),
+						CertificateRefs: []gatewayapiv1.SecretObjectReference{
+							{
+								Name:      "manual-wildcard",
+								Namespace: &sharedNamespace,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	route := &gatewayapiv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "grafana-iap",
+			Namespace: "monitoring",
+		},
+		Spec: gatewayapiv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayapiv1.CommonRouteSpec{
+				ParentRefs: []gatewayapiv1.ParentReference{
+					{
+						Name:      gatewayapiv1.ObjectName(defaulting.DefaultGatewayName),
+						Namespace: (*gatewayapiv1.Namespace)(ptr.To(namespace)),
+					},
+				},
+			},
+			Hostnames: []gatewayapiv1.Hostname{"grafana.example.com"},
+		},
+	}
+
+	client := fake.NewClientBuilder().WithObjects(gateway, route).Build()
+	reconciler := &Reconciler{
+		Client:              client,
+		log:                 zap.NewNop().Sugar(),
+		namespace:           namespace,
+		watchedNamespaceSet: sets.New("monitoring"),
+	}
+
+	current := &gatewayapiv1.Gateway{}
+	if err := client.Get(ctx, types.NamespacedName{Name: defaulting.DefaultGatewayName, Namespace: namespace}, current); err != nil {
+		t.Fatalf("failed to get gateway: %v", err)
+	}
+
+	if err := reconciler.reconcile(ctx, zap.NewNop().Sugar(), current); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	updated := &gatewayapiv1.Gateway{}
+	if err := client.Get(ctx, types.NamespacedName{Name: defaulting.DefaultGatewayName, Namespace: namespace}, updated); err != nil {
+		t.Fatalf("failed to get updated gateway: %v", err)
+	}
+
+	gotNames := make([]gatewayapiv1.SectionName, 0, len(updated.Spec.Listeners))
+	for _, listener := range updated.Spec.Listeners {
+		gotNames = append(gotNames, listener.Name)
+	}
+
+	wantNames := []gatewayapiv1.SectionName{"grafana-example-com", "http", "https"}
+	if !reflect.DeepEqual(gotNames, wantNames) {
+		t.Fatalf("unexpected listeners after reconcile: got %v, want %v", gotNames, wantNames)
+	}
+
+	var routeListener *gatewayapiv1.Listener
+	for i := range updated.Spec.Listeners {
+		if updated.Spec.Listeners[i].Name == "grafana-example-com" {
+			routeListener = &updated.Spec.Listeners[i]
+			break
+		}
+	}
+
+	if routeListener == nil {
+		t.Fatal("expected grafana hostname listener to be present")
+	}
+
+	coreHTTPS := gatewayutil.CoreListener(updated.Spec.Listeners, gatewayutil.CoreListenerHTTPS)
+	if coreHTTPS == nil {
+		t.Fatal("expected core https listener to be present")
+	}
+
+	if !reflect.DeepEqual(routeListener.TLS.CertificateRefs, coreHTTPS.TLS.CertificateRefs) {
+		t.Fatalf("expected hostname listener to reuse manual certificate refs, got %#v", routeListener.TLS.CertificateRefs)
+	}
+}

@@ -19,6 +19,7 @@ package kubestatemetrics
 import (
 	"fmt"
 
+	kubermaticv1 "k8c.io/kubermatic/sdk/v2/apis/kubermatic/v1"
 	"k8c.io/kubermatic/v2/pkg/kubernetes"
 	"k8c.io/kubermatic/v2/pkg/resources"
 	"k8c.io/kubermatic/v2/pkg/resources/apiserver"
@@ -33,20 +34,18 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
-var (
-	defaultResourceRequirements = map[string]*corev1.ResourceRequirements{
-		name: {
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
-				corev1.ResourceCPU:    resource.MustParse("50m"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("1Gi"),
-				corev1.ResourceCPU:    resource.MustParse("150m"),
-			},
+var defaultResourceRequirements = map[string]*corev1.ResourceRequirements{
+	name: {
+		Requests: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+			corev1.ResourceCPU:    resource.MustParse("50m"),
 		},
-	}
-)
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("1Gi"),
+			corev1.ResourceCPU:    resource.MustParse("150m"),
+		},
+	},
+}
 
 const (
 	name      = "kube-state-metrics"
@@ -63,14 +62,16 @@ func DeploymentReconciler(data *resources.TemplateData) reconciling.NamedDeploym
 
 			dep.Spec.Replicas = resources.Int32(1)
 
-			if data.Cluster().Spec.ComponentsOverride.KubeStateMetrics != nil {
-				if data.Cluster().Spec.ComponentsOverride.KubeStateMetrics.Replicas != nil {
-					dep.Spec.Replicas = data.Cluster().Spec.ComponentsOverride.KubeStateMetrics.Replicas
+			hostAntiAffinity := kubermaticv1.AntiAffinityType(kubermaticv1.AntiAffinityTypePreferred)
+			zoneAntiAffinity := kubermaticv1.AntiAffinityType(kubermaticv1.AntiAffinityTypePreferred)
+			override := data.Cluster().Spec.ComponentsOverride.KubeStateMetrics
+			if override != nil {
+				hostAntiAffinity = override.HostAntiAffinity
+				zoneAntiAffinity = override.ZoneAntiAffinity
+				if override.Replicas != nil {
+					dep.Spec.Replicas = override.Replicas
 				}
-
-				if data.Cluster().Spec.ComponentsOverride.KubeStateMetrics.Tolerations != nil {
-					dep.Spec.Template.Spec.Tolerations = data.Cluster().Spec.ComponentsOverride.KubeStateMetrics.Tolerations
-				}
+				dep.Spec.Template.Spec.Tolerations = override.Tolerations
 			}
 
 			dep.Spec.Selector = &metav1.LabelSelector{
@@ -173,6 +174,14 @@ func DeploymentReconciler(data *resources.TemplateData) reconciling.NamedDeploym
 			err := resources.SetResourceRequirements(dep.Spec.Template.Spec.Containers, defaultResourceRequirements, resources.GetOverrides(data.Cluster().Spec.ComponentsOverride), dep.Annotations)
 			if err != nil {
 				return nil, fmt.Errorf("failed to set resource requirements: %w", err)
+			}
+
+			if dep.Spec.Replicas != nil && *dep.Spec.Replicas > 1 {
+				dep.Spec.Template.Spec.Affinity = resources.HostnameAntiAffinity(resources.KubeStateMetricsDeploymentName, hostAntiAffinity)
+				if data.SupportsFailureDomainZoneAntiAffinity() {
+					failureDomainZoneAntiAffinity := resources.FailureDomainZoneAntiAffinity(resources.KubeStateMetricsDeploymentName, zoneAntiAffinity)
+					dep.Spec.Template.Spec.Affinity = resources.MergeAffinities(dep.Spec.Template.Spec.Affinity, failureDomainZoneAntiAffinity)
+				}
 			}
 
 			dep.Spec.Template, err = apiserver.IsRunningWrapper(data, dep.Spec.Template, sets.New(name))

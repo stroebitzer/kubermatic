@@ -19,7 +19,7 @@ set -euo pipefail
 cd $(dirname $0)/..
 source hack/lib.sh
 
-CONTAINERIZE_IMAGE=quay.io/kubermatic/build:go-1.24-node-20-6 containerize ./hack/verify-spelling.sh
+CONTAINERIZE_IMAGE=quay.io/kubermatic/build:go-1.25-node-22-8 containerize ./hack/verify-spelling.sh
 
 echodate "Running codespell..."
 
@@ -37,16 +37,24 @@ skip=(
   *.woff
   *.woff2
   *.pem
-  ./charts/cert-manager/crd
-  ./charts/backup/velero/crd
-  ./charts/dex/test
+  *.yaml.out
+  ./addons/canal
+  ./addons/metallb
   ./addons/multus/crds.yaml
+  ./charts/backup/velero/crd
+  ./charts/cert-manager/crd
+  ./charts/dex/test
   ./charts/local-kubevirt/crds
   ./pkg/applicationdefinitions/system-applications
+  ./pkg/controller/seed-controller-manager/addon/testdata/istio
+  ./pkg/controller/user-cluster-controller-manager/resources/resources/gatekeeper/static
+  ./pkg/crd
+  ./pkg/ee/cluster-backup/user-cluster/velero-controller/resources/static
   ./pkg/ee/default-application-catalog/applicationdefinitions
-  ./pkg/resources/test/fixtures
   ./pkg/ee/kyverno/resources/user-cluster/static
-  ./pkg/crd/k8s.io
+  ./pkg/resources/test/fixtures
+  ./pkg/test/addon/data
+  ./sdk/apis/kubermatic/v1/zz_generated.deepcopy.go
 )
 
 function join {
