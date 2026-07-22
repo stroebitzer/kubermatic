@@ -177,6 +177,19 @@ func (c *cli) InstallChart(namespace string, releaseName string, chartDirectory 
 		"--timeout", c.timeout.String(),
 	}
 
+	if c.version.Major() >= 4 {
+		// Helm 4 defaults --server-side to "auto" and already applies chart objects
+		// server-side. KKP components legitimately co-own fields of some chart-managed
+		// objects (e.g. the operator reconciles .dockerconfigjson of the dockercfg
+		// secret), so a plain server-side apply upgrade fails with field conflicts.
+		// --force-conflicts resolves those in helm's favor without forcing the apply
+		// method to "true", which would rewrite the full object body of every managed
+		// resource on every deploy and overwhelm loaded apiservers (e.g. the large
+		// user-cluster MLA stack). The conflict resolution is driven by --force-conflicts,
+		// not by forcing --server-side=true.
+		command = append(command, "--force-conflicts")
+	}
+
 	if valuesFile != "" {
 		command = append(command, "--values", valuesFile)
 	} else {
@@ -184,12 +197,31 @@ func (c *cli) InstallChart(namespace string, releaseName string, chartDirectory 
 	}
 
 	command = append(command, valuesToFlags(values)...)
-	command = append(command, flags...)
+	command = append(command, c.translateFlags(flags)...)
 	command = append(command, releaseName, chartDirectory)
 
 	_, err := c.run(namespace, command...)
 
 	return err
+}
+
+// translateFlags maps Helm-3-era flags to their Helm 4 replacements.
+func (c *cli) translateFlags(flags []string) []string {
+	if c.version.Major() < 4 {
+		return flags
+	}
+
+	result := make([]string, 0, len(flags))
+	for _, flag := range flags {
+		// deprecated in Helm 4
+		if flag == "--atomic" {
+			flag = "--rollback-on-failure"
+		}
+
+		result = append(result, flag)
+	}
+
+	return result
 }
 
 func (c *cli) GetRelease(namespace string, name string) (*Release, error) {

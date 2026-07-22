@@ -1,0 +1,129 @@
+name: Conformance Issue Trigger
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+    paths:
+      - 'pkg/provider/cloud/kubevirt/**'
+      - 'pkg/resources/csi/kubevirt/**'
+      - 'pkg/resources/cloudconfig/kubevirt/**'
+      - 'pkg/controller/user-cluster-controller-manager/kubevirt-vmi-eviction/**'
+      - 'pkg/ee/kubevirt-network-controller/**'
+      - 'addons/csi/kubevirt/**'
+      - 'sdk/apis/kubermatic/v1/cluster.go'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to create conformance tracking issues for'
+        required: true
+        type: string
+
+jobs:
+  create-issues:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+        (contains(github.event.pull_request.labels.*.name, 'kind/feature') ||
+         contains(github.event.pull_request.labels.*.name, 'kind/bug')))
+    runs-on: ubuntu-latest
+    environment:
+      name: KKP
+      deployment: false
+    permissions:
+      issues: write
+
+    steps:
+      - name: Fetch PR data
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+        run: |
+          PR=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json title,url,body,labels,mergedAt)
+
+          # workflow_dispatch can't check merge state/labels in the job "if", so enforce it here.
+          if [ "$(jq -r '.mergedAt != null and ([.labels[].name] | any(. == "kind/feature" or . == "kind/bug"))' <<<"$PR")" != "true" ]; then
+            echo "::error::PR #${PR_NUMBER} must be merged and labeled kind/feature or kind/bug."
+            exit 1
+          fi
+
+          {
+            echo "pr_number=${PR_NUMBER}"
+            echo "pr_title=$(jq -r .title <<<"$PR")"
+            echo "pr_url=$(jq -r .url <<<"$PR")"
+            echo "kind_labels=$(jq -r '[.labels[].name | select(startswith("kind/"))] | join(",")' <<<"$PR")"
+            echo "pr_body<<PR_BODY_EOF"
+            jq -r .body <<<"$PR"
+            echo "PR_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+      
+      - name: Create issue in kubermatic
+        id: kkp-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ steps.pr.outputs.pr_title }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+          PR_BODY: ${{ steps.pr.outputs.pr_body }}
+        run: |
+          ISSUE_URL=$(gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "Conformance-${PR_TITLE}" \
+            --body "## Conformance Tracking
+
+          **Triggered by PR:** [#${PR_NUMBER} — ${PR_TITLE}](${PR_URL})
+
+          ### PR Description
+          ${PR_BODY}")
+
+          ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
+          echo "url=${ISSUE_URL}" >> "$GITHUB_OUTPUT"
+          echo "number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "Created KKP issue #${ISSUE_NUMBER}: ${ISSUE_URL}"
+      
+      - name: Create issue in conformance-ee
+        env:
+          GH_TOKEN: ${{ secrets.KKP_CONFORMANCE_CROSS_GH_TOKEN }}
+          PR_TITLE: ${{ steps.pr.outputs.pr_title }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+          PR_BODY: ${{ steps.pr.outputs.pr_body }}
+          KKP_ISSUE_NUMBER: ${{ steps.kkp-issue.outputs.number }}
+          KKP_ISSUE_URL: ${{ steps.kkp-issue.outputs.url }}
+          KIND_LABELS: ${{ steps.pr.outputs.kind_labels }}
+        run: |
+          LABEL_ARGS=()
+          if [ -n "$KIND_LABELS" ]; then
+            IFS=',' read -ra LABELS <<< "$KIND_LABELS"
+            for label in "${LABELS[@]}"; do
+              gh label create "$label" --repo "kubermatic/conformance-ee" --force 2>/dev/null || true
+              LABEL_ARGS+=(--label "$label")
+            done
+          fi
+
+          DEST_ISSUE_URL=$(gh issue create \
+            --repo "kubermatic/conformance-ee" \
+            --title "Conformance-${PR_TITLE}" \
+            --assignee "kubermatic-bot" \
+            --assignee "@copilot" \
+            "${LABEL_ARGS[@]}" \
+            --body "## Conformance Tracking
+          
+          | Field | Value |
+          |-------|-------|
+          | **KKP PR** | [#${PR_NUMBER} — ${PR_TITLE}](${PR_URL}) |
+          | **KKP Issue** | [#${KKP_ISSUE_NUMBER}](${KKP_ISSUE_URL}) |
+          
+          ### PR Description
+          ${PR_BODY}
+          
+          > Closing this issue will automatically close the linked KKP issue.
+          
+          <!-- SOURCE-METADATA
+          source-repo: ${{ github.repository }}
+          source-issue: ${KKP_ISSUE_NUMBER}
+          source-pr: ${PR_NUMBER}
+          -->")
+          
+          echo "Created conformance-ee issue: ${DEST_ISSUE_URL}"

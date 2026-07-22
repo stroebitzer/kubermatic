@@ -188,7 +188,7 @@ const (
 	// WEBTerminalKubeconfigSecretName is the name of the kubeconfig secret user for WEB terminal tools pod.
 	WEBTerminalKubeconfigSecretName = "web-terminal-kubeconfig"
 	// WEBTerminalImage is the name of the image used for the web terminal tool pod.
-	WEBTerminalImage = RegistryQuay + "/kubermatic/web-terminal:0.12.0"
+	WEBTerminalImage = RegistryQuay + "/kubermatic/web-terminal:0.13.0"
 	// ImagePullSecretName specifies the name of the dockercfg secret used to access the private repo.
 	ImagePullSecretName = "dockercfg"
 
@@ -1764,14 +1764,17 @@ func GetDefaultServicesCIDRIPv4(provider kubermaticv1.ProviderType) string {
 
 // GetDefaultProxyMode returns the default proxy mode for the given provider.
 func GetDefaultProxyMode(provider kubermaticv1.ProviderType, clusterVersion semver.Semver) string {
-	// default to nftables for Kubernetes 1.35+ as iptables is deprecated and will be removed in Kubernetes 1.36
-	if clusterVersion.Semver() != nil && clusterVersion.Semver().Minor() >= 35 {
-		return NFTablesProxyMode
-	}
 	if provider == kubermaticv1.HetznerCloudProvider {
 		// IPVS causes issues with Hetzner's LoadBalancers, which should
 		// be addressed via https://github.com/kubernetes/enhancements/pull/1392
+		// Hetzner LoadBalancer traffic also times out under nftables mode,
+		// so keep Hetzner on iptables regardless of Kubernetes version until
+		// nftables is verified to work correctly.
 		return IPTablesProxyMode
+	}
+	// default to nftables for Kubernetes 1.35+ as IPVS is deprecated and will be removed in Kubernetes 1.36
+	if clusterVersion.Semver() != nil && clusterVersion.Semver().Minor() >= 35 {
+		return NFTablesProxyMode
 	}
 	return IPVSProxyMode
 }

@@ -12,8 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Gateway API is the default ingress path as of KKP 2.31. Dex is exposed via an HTTPRoute
+# attached to the platform Gateway managed by the kubermatic-operator; TLS for the external
+# domain is terminated at the Gateway listener (configured via the KubermaticConfiguration
+# spec.ingress and cert-manager), so no per-chart Ingress/cert-manager annotations are needed.
+migrateGatewayAPI: true
+httpRoute:
+  # Name and namespace of the platform Gateway to attach the Dex HTTPRoute to.
+  gatewayName: kubermatic
+  gatewayNamespace: kubermatic
+  # configure your base domain, under which the Kubermatic dashboard shall be available
+  domain: "kkp.example.com"
+
 dex:
   ingress:
+    # Gateway API (HTTPRoute) handles routing as of KKP 2.31, so the upstream Dex Ingress
+    # is disabled. The settings below are retained for reference / non-Gateway setups.
+    enabled: false
     # the cert-manager Issuer (or ClusterIssuer) responsible for managing the certificates
     # If you want to deploy your own certificate without relying on cert-manager
     # uncomment the next line and remove subsequent certIssuer configuration.
@@ -84,21 +99,10 @@ dex:
         userID: 08a8684b-db88-4b73-90a9-3cd1661f5466
 
     staticClients:
-      # The "kubermatic" client is used for logging into the Kubermatic dashboard. It always
-      # needs to be configured.
-      - id: kubermatic
-        name: Kubermatic
-        # Generate a secure secret key
-        # Those can be generated on the shell using:
-        # `cat /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c32`
-        secret: <a-random-key>
-        RedirectURIs:
-          # ensure the URLs below use the dex.ingress.hosts[0].host configured above
-          - https://kkp.example.com
-          - https://kkp.example.com/projects
-
-      # The "kubermaticIssuer" client is used for providing OIDC access to User Clusters.
-      # This configuration is optional, used if the "enableOIDCKubeconfig: true" option is used in KubermaticSetting.
+      # The "kubermaticIssuer" client is used both for logging into the Kubermatic
+      # dashboard (via the OIDC authorization-code flow) and for providing OIDC
+      # access to User Clusters when the "enableOIDCKubeconfig: true" option is
+      # set in KubermaticSetting.
       # More about this configuration at https://docs.kubermatic.com/kubermatic/latest/tutorials-howtos/oidc-provider-configuration/share-clusters-via-delegated-oidc-authentication/
       - id: kubermaticIssuer
         name: Kubermatic OIDC Issuer
@@ -111,6 +115,7 @@ dex:
           - https://kkp.example.com/api/v1/kubeconfig
           - https://kkp.example.com/api/v2/kubeconfig/secret
           - https://kkp.example.com/api/v2/dashboard/login
+          - https://kkp.example.com/api/v2/auth/callback
 
 minio:
   storeSize: "500Gi"
