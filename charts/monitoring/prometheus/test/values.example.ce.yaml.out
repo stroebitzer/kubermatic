@@ -10,6 +10,7 @@ spec:
   selector:
     matchLabels:
       app: 'release-name'
+
 ---
 # Source: prometheus/templates/serviceaccount.yaml
 # Copyright 2020 The Kubermatic Kubernetes Platform contributors.
@@ -30,6 +31,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: 'release-name'
+
 ---
 # Source: prometheus/templates/configmaps.yaml
 # Copyright 2020 The Kubermatic Kubernetes Platform contributors.
@@ -1189,6 +1191,61 @@ data:
             labels:
               severity: critical
               resource: "{{ $labels.node_name }}"
+              service: "node-exporter"
+          - alert: HighClusterCPUUsage
+            annotations:
+              message: The average CPU usage across all nodes is above 80% for more than 5 minutes.
+            expr: avg (100 - (rate(node_cpu_seconds_total{app_kubernetes_io_name="node-exporter", mode="idle"}[5m]) * 100)) > 80
+            for: 5m
+            labels:
+              severity: warning
+              service: "node-exporter"
+          - alert: HighClusterMemoryUsage
+            annotations:
+              message: The average memory usage across all nodes is above 80% for more than 5 minutes.
+            expr: |
+              max(
+                (
+                  sum(
+                    node_memory_MemTotal_bytes{app_kubernetes_io_name="node-exporter", node_name=~".*"}
+                  - node_memory_MemFree_bytes{app_kubernetes_io_name="node-exporter", node_name=~".*"}
+                  - node_memory_Buffers_bytes{app_kubernetes_io_name="node-exporter", node_name=~".*"}
+                  - node_memory_Cached_bytes{app_kubernetes_io_name="node-exporter", node_name=~".*"}
+                  )
+                  /
+                  sum(
+                    node_memory_MemTotal_bytes{app_kubernetes_io_name="node-exporter", node_name=~".*"}
+                  )
+                ) * 100) > 80
+            for: 5m
+            labels:
+              severity: warning
+              service: "node-exporter"
+          - alert: HighNodeCPUUsage
+            annotations:
+              message: Node {{ $labels.node_name }} has CPU usage above 80% for more than 5 minutes.
+            expr: avg by (node_name) (100 - (rate(node_cpu_seconds_total{app_kubernetes_io_name="node-exporter", mode="idle"}[5m]) * 100)) > 80
+            for: 5m
+            labels:
+              severity: warning
+              service: "node-exporter"
+          - alert: HighNodeMemoryUsage
+            annotations:
+              message: Node {{ $labels.node_name }} has memory usage above 80% for more than 5 minutes.
+            expr: |
+              avg by (node_name) (
+                (
+                  node_memory_MemTotal_bytes{app_kubernetes_io_name="node-exporter"}
+                - node_memory_MemFree_bytes{app_kubernetes_io_name="node-exporter"}
+                - node_memory_Buffers_bytes{app_kubernetes_io_name="node-exporter"}
+                - node_memory_Cached_bytes{app_kubernetes_io_name="node-exporter"}
+                )
+                /
+                node_memory_MemTotal_bytes{app_kubernetes_io_name="node-exporter"}
+              ) * 100 > 80
+            for: 5m
+            labels:
+              severity: warning
               service: "node-exporter"
     
   general-prometheus.yaml: |
@@ -3156,6 +3213,8 @@ data:
               severity: warning
               resource: loki
               service: loki
+    
+
 ---
 # Source: prometheus/templates/clusterrole.yaml
 # Copyright 2020 The Kubermatic Kubernetes Platform contributors.
@@ -3205,6 +3264,7 @@ rules:
   - services/node-exporter
   verbs:
   - get
+
 ---
 # Source: prometheus/templates/clusterrolebinding.yaml
 # Copyright 2020 The Kubermatic Kubernetes Platform contributors.
@@ -3233,6 +3293,7 @@ subjects:
 - kind: ServiceAccount
   name: 'release-name'
   namespace: 'default'
+
 ---
 # Source: prometheus/templates/role.yaml
 # Copyright 2020 The Kubermatic Kubernetes Platform contributors.
@@ -3285,6 +3346,9 @@ rules:
   - get
   - list
   - watch
+
+
+
 ---
 # Source: prometheus/templates/rolebinding.yaml
 # Copyright 2020 The Kubermatic Kubernetes Platform contributors.
@@ -3329,6 +3393,7 @@ subjects:
 - kind: ServiceAccount
   name: 'release-name'
   namespace: 'default'
+
 ---
 # Source: prometheus/templates/service.yaml
 # Copyright 2020 The Kubermatic Kubernetes Platform contributors.
@@ -3358,6 +3423,7 @@ spec:
     targetPort: web
   selector:
     app: 'release-name'
+
 ---
 # Source: prometheus/templates/statefulset.yaml
 # Copyright 2020 The Kubermatic Kubernetes Platform contributors.
@@ -3489,7 +3555,7 @@ spec:
           mountPath: /etc/prometheus/rules/
           readOnly: false
       - name: backup
-        image: 'quay.io/kubermatic/util:2.7.0'
+        image: 'quay.io/kubermatic/util:2.10.0'
         args:
         - /bin/sh
         - -c

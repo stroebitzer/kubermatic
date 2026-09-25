@@ -18,8 +18,8 @@ package resources
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
-	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -188,7 +188,7 @@ const (
 	// WEBTerminalKubeconfigSecretName is the name of the kubeconfig secret user for WEB terminal tools pod.
 	WEBTerminalKubeconfigSecretName = "web-terminal-kubeconfig"
 	// WEBTerminalImage is the name of the image used for the web terminal tool pod.
-	WEBTerminalImage = RegistryQuay + "/kubermatic/web-terminal:0.13.0"
+	WEBTerminalImage = RegistryQuay + "/kubermatic/web-terminal:0.13.1"
 	// ImagePullSecretName specifies the name of the dockercfg secret used to access the private repo.
 	ImagePullSecretName = "dockercfg"
 
@@ -955,12 +955,15 @@ const (
 	MLAGatewayKeySecretKey           = "gateway.key"
 	MLAGatewayCertSecretKey          = "gateway.crt"
 
-	// MLAMonitoringAgentCertificatesSecretName is the name for the secret containing the Monitoring Agent (grafana-agent) client certificates.
+	// MLAMonitoringAgentCertificatesSecretName is the name for the secret containing the Monitoring Agent (Grafana Alloy) client certificates.
 	MLAMonitoringAgentCertificatesSecretName = "monitoring-agent-certificates"
-	MLAMonitoringAgentCertificateCommonName  = "grafana-agent"
-	MLAMonitoringAgentClientKeySecretKey     = "client.key"
-	MLAMonitoringAgentClientCertSecretKey    = "client.crt"
-	MLAMonitoringAgentClientCertMountPath    = "/etc/ssl/mla"
+	// MLAMonitoringAgentCertificateCommonName is kept as "grafana-agent" on purpose: the MLA gateway
+	// only verifies the client certificate against the CA and derives the tenant from the injected
+	// X-Scope-OrgID header, so renaming the CN would only churn certificates on existing clusters.
+	MLAMonitoringAgentCertificateCommonName = "grafana-agent"
+	MLAMonitoringAgentClientKeySecretKey    = "client.key"
+	MLAMonitoringAgentClientCertSecretKey   = "client.crt"
+	MLAMonitoringAgentClientCertMountPath   = "/etc/ssl/mla"
 
 	// MLALoggingAgentCertificatesSecretName is the name for the secret containing the Logging Agent client certificates.
 	MLALoggingAgentCertificatesSecretName = "logging-agent-certificates"
@@ -1082,6 +1085,25 @@ const (
 	ClusterBackupUsername           = "velero"
 	ClusterBackupServiceAccountName = "velero"
 	ClusterBackupNamespaceName      = "velero"
+)
+
+// KubeVirt accelerator accounting is an alpha feature. These constants are part
+// of its provisional contract and may change before the feature graduates.
+const (
+	// AcceleratorAccountingEnabledAnnotation enables accelerator accounting for a project ResourceQuota.
+	AcceleratorAccountingEnabledAnnotation = "accelerators.kubermatic.io/accounting-enabled"
+	// AcceleratorAccountingEnabledAnnotationValue is the only value that enables accelerator accounting.
+	AcceleratorAccountingEnabledAnnotationValue = "true"
+	// AcceleratorAccountingWebhookPath is the dedicated fail-closed ResourceQuota activation path.
+	AcceleratorAccountingWebhookPath = "/validate-resourcequota-accelerator-accounting"
+	// MachineAcceleratorFootprintMutatingWebhookPath is the dedicated Machine footprint mutation endpoint.
+	MachineAcceleratorFootprintMutatingWebhookPath = "/mutate-machine-accelerator-footprint"
+	// MachineAcceleratorFootprintValidatingWebhookPath is the dedicated Machine footprint validation endpoint.
+	MachineAcceleratorFootprintValidatingWebhookPath = "/validate-machine-accelerator-footprint"
+	// AcceleratorAccountingHeartbeatInterval controls how often accounting participants refresh their report.
+	AcceleratorAccountingHeartbeatInterval = time.Minute
+	// AcceleratorAccountingHeartbeatTimeout is the maximum age accepted for an accounting report.
+	AcceleratorAccountingHeartbeatTimeout = 5 * time.Minute
 )
 
 var DefaultApplicationCacheSize = resource.MustParse("300Mi")
@@ -1355,16 +1377,20 @@ func getECDSAClusterCAFromLister(ctx context.Context, namespace, name string, cl
 	return &ECDSAKeyPair{Cert: cert, Key: ecdsaKey}, nil
 }
 
-func getRSAClusterCAFromLister(ctx context.Context, namespace, name string, client ctrlruntimeclient.Client) (*triple.KeyPair, error) {
+// getSignerClusterCAFromLister returns a cluster CA regardless of the algorithm
+// its key uses. Everything downstream of it signs through crypto.Signer, so
+// requiring RSA here would take down every leaf reconciler and every internal
+// kubeconfig of a cluster whose CA is not RSA.
+func getSignerClusterCAFromLister(ctx context.Context, namespace, name string, client ctrlruntimeclient.Client) (*triple.KeyPair, error) {
 	cert, key, err := getClusterCAFromLister(ctx, namespace, name, client)
 	if err != nil {
 		return nil, err
 	}
-	rsaKey, isRSAKey := key.(*rsa.PrivateKey)
-	if !isRSAKey {
-		return nil, errors.New("key is not a RSA key")
+	signer, isSigner := key.(crypto.Signer)
+	if !isSigner {
+		return nil, fmt.Errorf("CA key of type %T cannot be used to sign", key)
 	}
-	return &triple.KeyPair{Cert: cert, Key: rsaKey}, nil
+	return &triple.KeyPair{Cert: cert, Key: signer}, nil
 }
 
 // getClusterCAFromLister returns the CA of the cluster from the lister.
@@ -1409,12 +1435,12 @@ func GetCABundleFromFile(file string) ([]*x509.Certificate, error) {
 
 // GetClusterRootCA returns the root CA of the cluster from the lister.
 func GetClusterRootCA(ctx context.Context, namespace string, client ctrlruntimeclient.Client) (*triple.KeyPair, error) {
-	return getRSAClusterCAFromLister(ctx, namespace, CASecretName, client)
+	return getSignerClusterCAFromLister(ctx, namespace, CASecretName, client)
 }
 
 // GetClusterFrontProxyCA returns the frontproxy CA of the cluster from the lister.
 func GetClusterFrontProxyCA(ctx context.Context, namespace string, client ctrlruntimeclient.Client) (*triple.KeyPair, error) {
-	return getRSAClusterCAFromLister(ctx, namespace, FrontProxyCASecretName, client)
+	return getSignerClusterCAFromLister(ctx, namespace, FrontProxyCASecretName, client)
 }
 
 // GetOpenVPNCA returns the OpenVPN CA of the cluster from the lister.

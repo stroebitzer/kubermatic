@@ -26,6 +26,10 @@
 : "${KUBERMATIC_EDITION:=ee}"
 : "${KIND_CLUSTER_NAME:=${SEED_NAME:-kubermatic}}"
 : "${KUBERMATIC_DOMAIN:=worker.ci.k8c.io}"
+# Released 2.29/2.30 installers call `helm version --client`, which Helm 4
+# removed. Point them at a Helm 3 binary. Resolved from PATH so it survives
+# image-layout changes. Override if the binary is named differently.
+: "${KKP_LEGACY_HELM_BINARY:=helm3}"
 
 INSTALL_DIR_V229="${INSTALL_DIR_V229:-/tmp/kkp-${KKP_V229_VERSION}}"
 INSTALL_DIR_V230="${INSTALL_DIR_V230:-/tmp/kkp-${KKP_V230_VERSION}}"
@@ -313,6 +317,23 @@ setup_kkp_migration_environment() {
   write_migration_helm_values "${HELM_VALUES_FILE_UNDER_TEST_HYBRID}" "hybrid" "${KUBERMATIC_VERSION}"
 }
 
+check_kubermatic_version() {
+  local expected_version="$1"
+  local actual_version
+
+  if ! actual_version="$(kubectl --namespace kubermatic get kubermaticconfiguration e2e --output jsonpath='{.status.kubermaticVersion}' 2> /dev/null)"; then
+    echodate "Unable to read the current KubermaticConfiguration version."
+    return 1
+  fi
+
+  if [ "${actual_version}" != "${expected_version}" ]; then
+    echodate "KubermaticConfiguration reports ${actual_version:-<empty>}; waiting for ${expected_version}."
+    return 1
+  fi
+
+  return 0
+}
+
 deploy_kkp_v229() {
   echodate "Step 1: deploying KKP ${KKP_V229_VERSION} (nginx-ingress era)..."
   TEST_NAME="Install KKP ${KKP_V229_VERSION}"
@@ -320,7 +341,8 @@ deploy_kkp_v229() {
     --charts-directory "${INSTALL_DIR_V229}/charts" \
     --storageclass copy-default \
     --config "${KUBERMATIC_CONFIG}" \
-    --helm-values "${HELM_VALUES_FILE_V229_NGINX}"
+    --helm-values "${HELM_VALUES_FILE_V229_NGINX}" \
+    --helm-binary "${KKP_LEGACY_HELM_BINARY}"
 
   retry 10 check_all_deployments_ready kubermatic
   retry 10 check_all_deployments_ready nginx-ingress-controller
@@ -335,10 +357,13 @@ deploy_kkp_v230_with_gateway_api_flag() {
     --storageclass copy-default \
     --config "${KUBERMATIC_CONFIG}" \
     --helm-values "${HELM_VALUES_FILE_V230_GATEWAY_API}" \
+    --helm-binary "${KKP_LEGACY_HELM_BINARY}" \
     --migrate-gateway-api
 
   retry 10 check_all_deployments_ready kubermatic
   retry 10 check_all_deployments_ready envoy-gateway-controller
+  TEST_NAME="Wait for KKP ${KKP_V230_VERSION} status"
+  retry 10 check_kubermatic_version "${KKP_V230_VERSION}"
   echodate "KKP ${KKP_V230_VERSION} installed; Gateway API and nginx-ingress coexist."
 }
 
@@ -349,10 +374,13 @@ deploy_kkp_v230_without_gateway_api_flag() {
     --charts-directory "${INSTALL_DIR_V230}/charts" \
     --storageclass copy-default \
     --config "${KUBERMATIC_CONFIG}" \
-    --helm-values "${HELM_VALUES_FILE_V230_NGINX}"
+    --helm-values "${HELM_VALUES_FILE_V230_NGINX}" \
+    --helm-binary "${KKP_LEGACY_HELM_BINARY}"
 
   retry 10 check_all_deployments_ready kubermatic
   retry 10 check_all_deployments_ready nginx-ingress-controller
+  TEST_NAME="Wait for KKP ${KKP_V230_VERSION} status"
+  retry 10 check_kubermatic_version "${KKP_V230_VERSION}"
   echodate "KKP ${KKP_V230_VERSION} installed; remains on nginx-ingress."
 }
 

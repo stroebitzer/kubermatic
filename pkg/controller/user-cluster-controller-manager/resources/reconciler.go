@@ -60,6 +60,7 @@ import (
 	"k8c.io/kubermatic/v2/pkg/crd"
 	"k8c.io/kubermatic/v2/pkg/provider/kubernetes"
 	"k8c.io/kubermatic/v2/pkg/resources"
+	"k8c.io/kubermatic/v2/pkg/resources/certificates"
 	"k8c.io/kubermatic/v2/pkg/resources/certificates/triple"
 	kkpreconciling "k8c.io/kubermatic/v2/pkg/resources/reconciling"
 	"k8c.io/kubermatic/v2/pkg/resources/reconciling/modifier"
@@ -222,6 +223,10 @@ func (r *reconciler) reconcile(ctx context.Context) error {
 	}
 
 	if err := r.reconcileMutatingWebhookConfigurations(ctx, data); err != nil {
+		return err
+	}
+
+	if err := r.reconcileAcceleratorFootprintAdmission(ctx, data); err != nil {
 		return err
 	}
 
@@ -699,6 +704,66 @@ func (r *reconciler) reconcileValidatingWebhookConfigurations(ctx context.Contex
 	return nil
 }
 
+// reconcileAcceleratorFootprintAdmission reconciles the mutating configuration before the
+// validating configuration. Kubernetes observes the two configuration kinds independently,
+// so project activation requires the documented operational rollout procedure.
+func (r *reconciler) reconcileAcceleratorFootprintAdmission(ctx context.Context, data reconcileData) error {
+	active, err := r.acceleratorFootprintAdmissionActive(ctx, data)
+	if err != nil {
+		return err
+	}
+	if !active {
+		return nil
+	}
+
+	if err := r.reconcileAcceleratorMutatingWebhookConfiguration(ctx, data); err != nil {
+		return fmt.Errorf("failed to reconcile Machine accelerator footprint mutation: %w", err)
+	}
+	if err := r.reconcileAcceleratorValidatingWebhookConfiguration(ctx, data); err != nil {
+		return fmt.Errorf("failed to install Machine accelerator footprint CREATE and UPDATE validation: %w", err)
+	}
+	return nil
+}
+
+func (r *reconciler) reconcileAcceleratorValidatingWebhookConfiguration(ctx context.Context, data reconcileData) error {
+	return reconciling.ReconcileValidatingWebhookConfigurations(ctx,
+		[]reconciling.NamedValidatingWebhookConfigurationReconcilerFactory{
+			machine.AcceleratorValidatingWebhookConfigurationReconciler(data.caCert.Cert, r.namespace),
+		}, "", r)
+}
+
+func (r *reconciler) reconcileAcceleratorMutatingWebhookConfiguration(ctx context.Context, data reconcileData) error {
+	return reconciling.ReconcileMutatingWebhookConfigurations(ctx,
+		[]reconciling.NamedMutatingWebhookConfigurationReconcilerFactory{
+			machine.AcceleratorMutatingWebhookConfigurationReconciler(data.caCert.Cert, r.namespace),
+		}, "", r)
+}
+
+// acceleratorFootprintAdmissionActive makes activation sticky. Once either footprint webhook
+// exists, both remain reconciled so disabling the gate cannot make persisted footprints mutable.
+func (r *reconciler) acceleratorFootprintAdmissionActive(ctx context.Context, data reconcileData) (bool, error) {
+	if data.cloudProviderName != string(kubermaticv1.KubevirtCloudProvider) {
+		return false, nil
+	}
+	if r.kubeVirtAcceleratorQuota {
+		return true, nil
+	}
+
+	objects := []ctrlruntimeclient.Object{
+		&admissionregistrationv1.MutatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: machine.AcceleratorAdmissionWebhookName}},
+		&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: machine.AcceleratorAdmissionWebhookName}},
+	}
+	for _, object := range objects {
+		if err := r.Get(ctx, ctrlruntimeclient.ObjectKeyFromObject(object), object); err == nil {
+			return true, nil
+		} else if !apierrors.IsNotFound(err) {
+			return false, fmt.Errorf("failed to determine KubeVirt accelerator footprint admission state: %w", err)
+		}
+	}
+
+	return false, nil
+}
+
 func (r *reconciler) reconcileServices(ctx context.Context, data reconcileData) error {
 	creatorsKubeSystem := []reconciling.NamedServiceReconcilerFactory{
 		coredns.ServiceReconciler(r.dnsClusterIP),
@@ -851,7 +916,8 @@ func (r *reconciler) reconcileSecrets(ctx context.Context, data reconcileData) e
 		creators = append(creators, metricsserver.TLSServingCertSecretReconciler(
 			func() (*triple.KeyPair, error) {
 				return data.caCert, nil
-			}),
+			},
+			data.certificateKeyConfig),
 		)
 	}
 
@@ -861,21 +927,21 @@ func (r *reconciler) reconcileSecrets(ctx context.Context, data reconcileData) e
 		}
 
 		if r.cloudProvider == kubermaticv1.VSphereCloudProvider {
-			creators = append(creators, csisnapshotter.TLSServingCertificateReconciler(resources.CSISnapshotValidationWebhookName, data.caCert))
+			creators = append(creators, csisnapshotter.TLSServingCertificateReconciler(resources.CSISnapshotValidationWebhookName, data.caCert, data.certificateKeyConfig))
 			if data.ccmMigration {
-				creators = append(creators, csimigration.TLSServingCertificateReconciler(data.caCert))
+				creators = append(creators, csimigration.TLSServingCertificateReconciler(data.caCert, data.certificateKeyConfig))
 			}
 		}
 
 		if r.cloudProvider == kubermaticv1.NutanixCloudProvider {
 			creators = append(creators, cloudcontroller.NutanixCSIConfig(data.csiCloudConfig),
-				csisnapshotter.TLSServingCertificateReconciler(resources.CSISnapshotValidationWebhookName, data.caCert))
+				csisnapshotter.TLSServingCertificateReconciler(resources.CSISnapshotValidationWebhookName, data.caCert, data.certificateKeyConfig))
 		}
 	}
 
 	if !data.cluster.Spec.DisableCSIDriver {
 		if r.cloudProvider == kubermaticv1.OpenstackCloudProvider || r.cloudProvider == kubermaticv1.DigitaloceanCloudProvider {
-			creators = append(creators, csisnapshotter.TLSServingCertificateReconciler(resources.CSISnapshotValidationWebhookName, data.caCert))
+			creators = append(creators, csisnapshotter.TLSServingCertificateReconciler(resources.CSISnapshotValidationWebhookName, data.caCert, data.certificateKeyConfig))
 		}
 	}
 
@@ -1165,6 +1231,14 @@ func (r *reconciler) reconcilePodDisruptionBudgets(ctx context.Context) error {
 		return fmt.Errorf("failed to reconcile PodDisruptionBudgets: %w", err)
 	}
 	return nil
+}
+
+// certificateKeyConfig resolves the key parameters that were frozen into the
+// cluster when it was created. It is a KeyConfigGetter, so an unusable
+// configuration surfaces as a reconcile error rather than a panic while the
+// reconciler list is assembled.
+func (d reconcileData) certificateKeyConfig() (triple.KeyConfig, error) {
+	return certificates.CertificateKeyConfig(d.cluster)
 }
 
 type reconcileData struct {

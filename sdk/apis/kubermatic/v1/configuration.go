@@ -332,6 +332,19 @@ type KubermaticUserClusterConfiguration struct {
 	// AdmissionPlugins configures global admission plugin settings for all user clusters.
 	// +optional
 	AdmissionPlugins *AdmissionPluginsConfiguration `json:"admissionPlugins,omitempty"`
+	// KeyConfiguration selects the algorithm and size of the key material KKP generates
+	// for user clusters. The value is stamped into each Cluster when it is created; it
+	// therefore only affects clusters created after it is changed, never existing ones.
+	// Clusters that already exist are not migrated to a changed value, and cannot be
+	// migrated: rotating the key material of a running cluster is not supported yet.
+	//
+	// This does not cover key material that does not belong to a single user cluster,
+	// such as the KKP webhook CA or the VPA admission certificate; those remain
+	// RSA-2048 regardless of this setting.
+	// The per-cluster OpenVPN and MLA gateway CAs and their certificates are not
+	// covered either; they are always ECDSA P-256.
+	// +optional
+	KeyConfiguration *KeyConfiguration `json:"keyConfiguration,omitempty"`
 }
 
 // KubermaticUserClusterMonitoringConfiguration can be used to fine-tune to in-cluster Prometheus.
@@ -484,16 +497,17 @@ type KubermaticIngressConfiguration struct {
 	// a disabled Ingress, this must always be a valid hostname.
 	Domain string `json:"domain"`
 
-	// ClassName is the Ingress resource's class name, used for selecting the appropriate
-	// ingress controller.
+	// Deprecated: ClassName is the Ingress resource's class name, used for selecting the appropriate
+	// ingress controller. Gateway API is enforced as of KKP 2.31 and the operator no longer
+	// creates Ingress resources. This field is ignored.
 	ClassName string `json:"className,omitempty"`
 
 	// NamespaceOverride need to be set if a different ingress-controller is used than the KKP default one.
 	NamespaceOverride string `json:"namespaceOverride,omitempty"`
 
-	// Disable will prevent an Ingress from being created at all. This is mostly useful
-	// during testing. If the Ingress is disabled, the CertificateIssuer setting can also
-	// be left empty, as no Certificate resource will be created.
+	// Deprecated: Disable will prevent an Ingress from being created at all. This was mostly
+	// useful during testing. Gateway API is enforced as of KKP 2.31 and the operator no longer
+	// creates Ingress resources. This field is ignored.
 	Disable bool `json:"disable,omitempty"`
 
 	// CertificateIssuer is the name of a cert-manager Issuer or ClusterIssuer (default)
